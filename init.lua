@@ -95,7 +95,7 @@ do
   -- Set <space> as the leader key
   -- See `:help mapleader`
   --  NOTE: Must happen before plugins are loaded (otherwise wrong leader will be used)
-  vim.g.mapleader = ' '
+  vim.g.mapleader = ','
   vim.g.maplocalleader = ' '
 
   -- Set to true if you have a Nerd Font installed and selected in the terminal
@@ -134,7 +134,7 @@ do
   vim.o.ignorecase = true
   vim.o.smartcase = true
 
-  -- Keep signcolumn on by default
+  -- Keep the sign column reserved so diagnostics do not shift the buffer
   vim.o.signcolumn = 'yes'
 
   -- Decrease update time
@@ -173,6 +173,36 @@ do
   vim.o.confirm = true
 end
 
+-- Keep hover windows readable even when a language server includes huge
+-- inline data-URI images (for example, MDN's embedded SVG icons).
+local lsp_hover_options = {
+  border = 'rounded',
+  title = ' Hover ',
+  title_pos = 'center',
+  max_width = 80,
+  max_height = 15,
+  wrap = true,
+  focusable = true,
+}
+
+local lsp_convert_input_to_markdown_lines = vim.lsp.util.convert_input_to_markdown_lines
+local function strip_inline_data_images(value)
+  if type(value) == 'string' then
+    return (value:gsub('!%[[^]]*%]%(%s*data:image/[^)]*%)', ''))
+  end
+  if type(value) == 'table' then
+    local copy = {}
+    for key, item in pairs(value) do
+      copy[key] = strip_inline_data_images(item)
+    end
+    return copy
+  end
+  return value
+end
+vim.lsp.util.convert_input_to_markdown_lines = function(contents, ...)
+  return lsp_convert_input_to_markdown_lines(strip_inline_data_images(contents), ...)
+end
+
 -- ============================================================
 -- SECTION 2: KEYMAPS & AUTOCMDS
 -- basic keymaps, basic autocmds
@@ -185,11 +215,33 @@ do
   --  See `:help hlsearch`
   vim.keymap.set('n', '<Esc>', '<cmd>nohlsearch<CR>')
 
+  -- Copy a visual selection as a file and line-range reference for Pi.
+  vim.keymap.set('x', '<leader>y', function()
+    local start_line = vim.fn.line "'<"
+    local end_line = vim.fn.line "'>"
+    if start_line > end_line then start_line, end_line = end_line, start_line end
+
+    local file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':.')
+    if file == '' then file = '[No Name]' end
+
+    local reference = string.format('%s:%d-%d', file, start_line, end_line)
+    vim.fn.setreg('+', reference)
+    vim.notify('Copied reference: ' .. reference)
+  end, { desc = 'Copy file/line reference' })
+
   -- Diagnostic Config & Keymaps
   --  See `:help vim.diagnostic.Opts`
   vim.diagnostic.config {
     update_in_insert = false,
     severity_sort = true,
+    signs = {
+      text = {
+        [vim.diagnostic.severity.ERROR] = '●',
+        [vim.diagnostic.severity.WARN] = '●',
+        [vim.diagnostic.severity.INFO] = '●',
+        [vim.diagnostic.severity.HINT] = '●',
+      },
+    },
     float = { border = 'rounded', source = 'if_many' },
     underline = { severity = { min = vim.diagnostic.severity.WARN } },
 
@@ -208,6 +260,14 @@ do
       end,
     },
   }
+
+  -- Make LSP hover documentation compact and readable. `vim.lsp.buf.hover`
+  -- opens the preview directly on recent Neovim versions, so the options are
+  -- also passed explicitly in the mapping below.
+  vim.lsp.handlers['textDocument/hover'] = function(err, result, ctx, config)
+    config = vim.tbl_deep_extend('force', config or {}, lsp_hover_options)
+    return vim.lsp.handlers.hover(err, result, ctx, config)
+  end
 
   vim.keymap.set('n', '<leader>q', vim.diagnostic.setloclist, { desc = 'Open diagnostic [Q]uickfix list' })
 
@@ -349,23 +409,59 @@ do
   -- Here is a more advanced configuration example that passes options to `gitsigns.nvim`
   --
   -- See `:help gitsigns` to understand what each configuration key does.
-  -- Adds git related signs to the gutter, as well as utilities for managing changes
+  -- Show git changes by highlighting line numbers, without adding a gutter column.
   vim.pack.add { gh 'lewis6991/gitsigns.nvim' }
-  require('gitsigns').setup {
+  local gitsigns = require 'gitsigns'
+  gitsigns.setup {
+    signcolumn = true,
+    numhl = false,
     signs = {
-      add = { text = '+' }, ---@diagnostic disable-line: missing-fields
-      change = { text = '~' }, ---@diagnostic disable-line: missing-fields
-      delete = { text = '_' }, ---@diagnostic disable-line: missing-fields
-      topdelete = { text = '‾' }, ---@diagnostic disable-line: missing-fields
-      changedelete = { text = '~' }, ---@diagnostic disable-line: missing-fields
+      add = { text = '▎' },
+      change = { text = '▎' },
+      delete = { text = '▁' },
+      topdelete = { text = '▔' },
+      changedelete = { text = '┋' },
+      untracked = { text = '┆' },
     },
   }
+  vim.keymap.set('n', 'gc', function() gitsigns.nav_hunk 'next' end, { desc = '[G]it next [C]hange' })
+  vim.keymap.set('n', 'gC', function() gitsigns.nav_hunk 'prev' end, { desc = '[G]it previous [C]hange' })
+
+  -- Decorated scrollbar with diagnostics, search, Git hunks, and marks.
+  vim.pack.add { gh 'lewis6991/satellite.nvim' }
+  require('satellite').setup {}
+
+  -- Side-by-side Git diff review, available from Neogit when needed.
+  vim.pack.add { gh 'sindrets/diffview.nvim' }
+  local diffview_actions = require 'diffview.actions'
+  require('diffview').setup {
+    use_icons = false,
+    keymaps = {
+      view = {
+        { 'n', 'q', diffview_actions.close, { desc = 'Close diffview' } },
+        { 'n', '<Esc>', diffview_actions.close, { desc = 'Close diffview' } },
+      },
+      file_panel = {
+        { 'n', 'q', diffview_actions.close, { desc = 'Close diffview' } },
+        { 'n', '<Esc>', diffview_actions.close, { desc = 'Close diffview' } },
+      },
+    },
+  }
+
+  -- Native Git status, staging, and inline diffs.
+  vim.pack.add { gh 'NeogitOrg/neogit' }
+  local neogit = require 'neogit'
+  neogit.setup {
+    kind = 'replace',
+    notification_icon = '●',
+  }
+  vim.keymap.set('n', '<leader>g', function() neogit.open { kind = 'replace' } end, { desc = '[G]it status' })
 
   -- Useful plugin to show you pending keybinds.
   vim.pack.add { gh 'folke/which-key.nvim' }
   require('which-key').setup {
     -- Delay between pressing a key and opening which-key (milliseconds)
-    delay = 0,
+    delay = 500,
     icons = { mappings = vim.g.have_nerd_font },
     -- Document existing key chains
     spec = {
@@ -382,18 +478,16 @@ do
   -- change the command under that to load whatever the name of that colorscheme is.
   --
   -- If you want to see what colorschemes are already installed, you can use `:Telescope colorscheme`.
-  vim.pack.add { gh 'folke/tokyonight.nvim' }
-  ---@diagnostic disable-next-line: missing-fields
-  require('tokyonight').setup {
-    styles = {
-      comments = { italic = false }, -- Disable italics in comments
-    },
-  }
+  vim.o.background = 'dark'
+  vim.pack.add { gh 'sainnhe/gruvbox-material' }
+  vim.cmd.colorscheme 'gruvbox-material'
 
-  -- Load the colorscheme here.
-  -- Like many other themes, this one has different styles, and you could load
-  -- any other, such as 'tokyonight-storm', 'tokyonight-moon', or 'tokyonight-day'.
-  vim.cmd.colorscheme 'tokyonight-night'
+  -- [[ Hop.nvim ]]
+  -- An EasyMotion-like word jump with labels.
+  vim.pack.add { gh 'smoka7/hop.nvim' }
+  local hop = require 'hop'
+  hop.setup {}
+  vim.keymap.set({ 'n', 'x', 'o' }, '<leader>w', hop.hint_words, { desc = '[W]ord jump' })
 
   -- Highlight todo, notes, etc in comments
   vim.pack.add { gh 'folke/todo-comments.nvim' }
@@ -454,6 +548,61 @@ end
 -- Telescope setup, keymaps, LSP picker mappings
 -- ============================================================
 do
+  -- Sidebar file tree.
+  vim.pack.add {
+    gh 'nvim-tree/nvim-tree.lua',
+    gh 'nvim-tree/nvim-web-devicons',
+  }
+  require('nvim-tree').setup {
+    view = {
+      side = 'left',
+      width = 32,
+      preserve_window_proportions = true,
+    },
+    renderer = {
+      group_empty = true,
+      indent_markers = { enable = true },
+    },
+    update_focused_file = {
+      enable = true,
+      update_root = false,
+    },
+    actions = {
+      open_file = {
+        -- Selecting a file closes the tree and returns to the editor.
+        quit_on_open = true,
+      },
+    },
+    git = { enable = true, ignore = true },
+    filters = { dotfiles = false },
+  }
+
+  -- Make the tree inherit the active colorscheme instead of using its own
+  -- opaque background.
+  local function sync_nvim_tree_highlights()
+    for target, source in pairs {
+      NvimTreeNormal = 'Normal',
+      NvimTreeNormalNC = 'Normal',
+      NvimTreeNormalFloat = 'Normal',
+      NvimTreeEndOfBuffer = 'EndOfBuffer',
+      NvimTreeWinSeparator = 'WinSeparator',
+    } do
+      vim.api.nvim_set_hl(0, target, { link = source })
+    end
+  end
+  sync_nvim_tree_highlights()
+  vim.api.nvim_create_autocmd('ColorScheme', { callback = sync_nvim_tree_highlights })
+
+  local nvim_tree_api = require 'nvim-tree.api'
+  vim.keymap.set('n', '<leader>e', function()
+    if nvim_tree_api.tree.is_visible() then
+      nvim_tree_api.tree.close()
+    else
+      -- Open the tree in the current window as a full-screen file chooser.
+      nvim_tree_api.tree.open { current_window = true }
+    end
+  end, { desc = 'Toggle full-screen file tree' })
+
   -- [[ Fuzzy Finder (files, lsp, etc) ]]
   --
   -- Telescope is a fuzzy finder that comes with a lot of different things that
@@ -491,15 +640,11 @@ do
 
   -- See `:help telescope` and `:help telescope.setup()`
   require('telescope').setup {
-    -- You can put your default mappings / updates / etc. in here
-    --  All the info you're looking for is in `:help telescope.setup()`
-    --
-    -- defaults = {
-    --   mappings = {
-    --     i = { ['<c-enter>'] = 'to_fuzzy_refine' },
-    --   },
-    -- },
-    -- pickers = {}
+    defaults = {
+      layout_config = { prompt_position = 'top' },
+      -- Keep the filename prominent while retaining its directory context.
+      path_display = { 'filename_first' },
+    },
     extensions = {
       ['ui-select'] = { require('telescope.themes').get_dropdown() },
     },
@@ -514,6 +659,19 @@ do
   vim.keymap.set('n', '<leader>sh', builtin.help_tags, { desc = '[S]earch [H]elp' })
   vim.keymap.set('n', '<leader>sk', builtin.keymaps, { desc = '[S]earch [K]eymaps' })
   vim.keymap.set('n', '<leader>sf', builtin.find_files, { desc = '[S]earch [F]iles' })
+  vim.keymap.set('n', '<leader>f', function()
+    builtin.find_files {
+      -- Keep the prompt and result list together at the top of the picker.
+      layout_strategy = 'vertical',
+      layout_config = {
+        prompt_position = 'top',
+        mirror = true,
+        width = 0.7,
+        height = 0.85,
+        preview_height = 0.35,
+      },
+    }
+  end, { desc = '[F]ind a file' })
   vim.keymap.set('n', '<leader>ss', builtin.builtin, { desc = '[S]earch [S]elect Telescope' })
   vim.keymap.set({ 'n', 'v' }, '<leader>sw', builtin.grep_string, { desc = '[S]earch current [W]ord' })
   vim.keymap.set('n', '<leader>sg', builtin.live_grep, { desc = '[S]earch by [G]rep' })
@@ -545,6 +703,7 @@ do
       -- Fuzzy find all the symbols in your current document.
       -- Symbols are things like variables, functions, types, etc.
       vim.keymap.set('n', 'gO', builtin.lsp_document_symbols, { buffer = buf, desc = 'Open Document Symbols' })
+      vim.keymap.set('n', '<leader>s', builtin.lsp_document_symbols, { buffer = buf, desc = '[S]earch document [S]ymbols' })
 
       -- Fuzzy find all the symbols in your current workspace.
       -- Similar to document symbols, except searches over your entire project.
@@ -647,6 +806,31 @@ do
       -- WARN: This is not Goto Definition, this is Goto Declaration.
       --  For example, in C this would take you to the header.
       map('grD', vim.lsp.buf.declaration, '[G]oto [D]eclaration')
+      map('gd', vim.lsp.buf.definition, '[G]oto [D]efinition')
+      map('gh', function()
+        local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+        row = row - 1
+        local has_diagnostic = false
+
+        for _, diagnostic in ipairs(vim.diagnostic.get(0, { lnum = row })) do
+          local start_col = diagnostic.col or 0
+          local end_col = math.max(diagnostic.end_col or start_col + 1, start_col + 1)
+          local severity = diagnostic.severity
+          local is_error_or_warning = severity == vim.diagnostic.severity.ERROR or severity == vim.diagnostic.severity.WARN
+          if is_error_or_warning and col >= start_col and col < end_col then
+            has_diagnostic = true
+            break
+          end
+        end
+
+        if has_diagnostic then
+          vim.diagnostic.open_float { scope = 'cursor', focus = false }
+        else
+          vim.lsp.buf.hover(vim.tbl_extend('force', {}, lsp_hover_options))
+        end
+      end, '[H]over or diagnostic')
+      map('gp', function() vim.diagnostic.jump { count = 1 } end, '[G]oto next diagnostic')
+      map('gP', function() vim.diagnostic.jump { count = -1 } end, '[G]oto previous diagnostic')
 
       -- The following two autocommands are used to highlight references of the
       -- word under your cursor when your cursor rests there for a little while.
@@ -694,14 +878,17 @@ do
   local servers = {
     -- clangd = {},
     -- gopls = {},
-    -- pyright = {},
-    -- rust_analyzer = {},
+    pyright = {},
+    rust_analyzer = {},
+    html = {},
+    cssls = {},
+    omnisharp = {}, -- C#
+    intelephense = {}, -- PHP
     --
     -- Some languages (like typescript) have entire language plugins that can be useful:
     --    https://github.com/pmizio/typescript-tools.nvim
     --
-    -- But for many setups, the LSP (`ts_ls`) will work just fine
-    -- ts_ls = {},
+    -- JavaScript and TypeScript use the native TypeScript 7 Go LSP below.
 
     stylua = {}, -- Used to format Lua code
 
@@ -771,6 +958,14 @@ do
     vim.lsp.config(name, server)
     vim.lsp.enable(name)
   end
+
+  -- TypeScript 7's native Go-based language server.
+  vim.lsp.config('tsgo', {
+    cmd = { 'tsc', '--lsp', '--stdio' },
+    filetypes = { 'javascript', 'javascriptreact', 'typescript', 'typescriptreact' },
+    root_markers = { 'tsconfig.json', 'jsconfig.json', 'package.json', '.git' },
+  })
+  vim.lsp.enable('tsgo')
 end
 
 -- ============================================================
@@ -808,7 +1003,7 @@ do
     },
   }
 
-  vim.keymap.set({ 'n', 'v' }, '<leader>f', function() require('conform').format { async = true } end, { desc = '[F]ormat buffer' })
+  vim.keymap.set({ 'n', 'v' }, '<leader>F', function() require('conform').format { async = true } end, { desc = '[F]ormat buffer' })
 end
 
 -- ============================================================
@@ -855,7 +1050,7 @@ do
       -- <c-k>: Toggle signature help
       --
       -- See `:help blink-cmp-config-keymap` for defining your own keymap
-      preset = 'default',
+      preset = 'enter',
 
       -- For more advanced Luasnip keymaps (e.g. selecting choice nodes, expansion) see:
       --    https://github.com/L3MON4D3/LuaSnip?tab=readme-ov-file#keymaps
@@ -906,8 +1101,12 @@ do
   -- NOTE: You can also specify a branch or a specific commit
   vim.pack.add { { src = gh 'nvim-treesitter/nvim-treesitter', version = 'main' } }
 
+  -- Keep the current function/class context visible while scrolling.
+  vim.pack.add { gh 'nvim-treesitter/nvim-treesitter-context' }
+  require('treesitter-context').setup { max_lines = 3 }
+
   -- Ensure basic parsers are installed
-  local parsers = { 'bash', 'c', 'diff', 'html', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'vim', 'vimdoc' }
+  local parsers = { 'bash', 'c', 'css', 'diff', 'html', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'vim', 'vimdoc' }
   require('nvim-treesitter').install(parsers)
 
   ---@param buf integer
@@ -952,6 +1151,20 @@ do
         treesitter_try_attach(buf, language)
       end
     end,
+  })
+
+  -- LSP support for CSS/HTML embedded in TypeScript templates.
+  vim.pack.add { gh 'jmbuhr/otter.nvim' }
+  local otter = require 'otter'
+  otter.setup {
+    buffers = {
+      -- Ignore standalone Lit interpolations in extracted CSS.
+      ignore_pattern = { css = '^%s*%${.*}$' },
+    },
+  }
+  vim.api.nvim_create_autocmd('FileType', {
+    pattern = { 'typescript', 'typescriptreact', 'javascript', 'javascriptreact' },
+    callback = function() otter.activate({ 'css', 'html' }) end,
   })
 end
 
