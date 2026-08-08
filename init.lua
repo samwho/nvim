@@ -208,6 +208,27 @@ end
 -- basic keymaps, basic autocmds
 -- ============================================================
 do
+  -- Inline diagnostics with wrapping, so long messages remain visible without
+  -- requiring the cursor to be moved onto the diagnostic line.
+  vim.pack.add { 'https://github.com/rachartier/tiny-inline-diagnostic.nvim' }
+  require('tiny-inline-diagnostic').setup {
+    preset = 'minimal',
+    transparent_bg = true,
+    options = {
+      softwrap = 30,
+      show_source = { enabled = false },
+      show_code = false,
+      add_messages = {
+        messages = true,
+        display_count = false,
+      },
+      multilines = {
+        enabled = true,
+        always_show = true,
+      },
+    },
+  }
+
   -- [[ Basic Keymaps ]]
   --  See `:help vim.keymap.set()`
 
@@ -217,8 +238,10 @@ do
 
   -- Copy a visual selection as a file and line-range reference for Pi.
   vim.keymap.set('x', '<leader>y', function()
-    local start_line = vim.fn.line "'<"
-    local end_line = vim.fn.line "'>"
+    -- In a visual-mode mapping, the `<`/`>` marks may not have been updated
+    -- yet. Use the live visual anchor and cursor instead.
+    local start_line = vim.fn.line 'v'
+    local end_line = vim.fn.line '.'
     if start_line > end_line then start_line, end_line = end_line, start_line end
 
     local file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':.')
@@ -245,9 +268,10 @@ do
     float = { border = 'rounded', source = 'if_many' },
     underline = { severity = { min = vim.diagnostic.severity.WARN } },
 
-    -- Can switch between these as you prefer
-    virtual_text = true, -- Text shows up at the end of the line
-    virtual_lines = false, -- Text shows up underneath the line, with virtual lines
+    -- tiny-inline-diagnostic renders wrapped messages; disable Neovim's
+    -- competing built-in renderers.
+    virtual_text = false,
+    virtual_lines = false,
 
     -- Auto open the float, so you can easily read the errors when jumping with `[d` and `]d`
     jump = {
@@ -269,6 +293,16 @@ do
     return vim.lsp.handlers.hover(err, result, ctx, config)
   end
 
+  vim.keymap.set('n', 'gl', function()
+    vim.diagnostic.open_float {
+      scope = 'cursor',
+      focus = false,
+      border = 'rounded',
+      max_width = 100,
+      max_height = 15,
+      wrap = true,
+    }
+  end, { desc = 'Show full diagnostic' })
   vim.keymap.set('n', '<leader>q', vim.diagnostic.setloclist, { desc = 'Open diagnostic [Q]uickfix list' })
 
   -- Exit terminal mode in the builtin terminal with a shortcut that is a bit easier
@@ -448,14 +482,24 @@ do
     },
   }
 
-  -- Native Git status, staging, and inline diffs.
-  vim.pack.add { gh 'NeogitOrg/neogit' }
+  -- LazyGit provides a compact file list with added/removed line counts.
+  vim.pack.add {
+    gh 'kdheepak/lazygit.nvim',
+    gh 'NeogitOrg/neogit',
+  }
+  vim.g.lazygit_floating_window_winblend = 0
+  vim.g.lazygit_floating_window_scaling_factor = 0.9
+  vim.g.lazygit_floating_window_use_plenary = 1
+  vim.g.lazygit_use_neovim_remote = 1
+  vim.keymap.set('n', '<leader>g', '<cmd>LazyGit<CR>', { desc = '[G]it status (LazyGit)' })
+
+  -- Keep Neogit available for its native staging workflow.
   local neogit = require 'neogit'
   neogit.setup {
     kind = 'replace',
     notification_icon = '●',
   }
-  vim.keymap.set('n', '<leader>g', function() neogit.open { kind = 'replace' } end, { desc = '[G]it status' })
+  vim.keymap.set('n', '<leader>G', function() neogit.open { kind = 'replace' } end, { desc = '[G]it status (Neogit)' })
 
   -- Useful plugin to show you pending keybinds.
   vim.pack.add { gh 'folke/which-key.nvim' }
@@ -554,6 +598,13 @@ do
     gh 'nvim-tree/nvim-web-devicons',
   }
   require('nvim-tree').setup {
+    on_attach = function(bufnr)
+      local api = require 'nvim-tree.api'
+      api.map.on_attach.default(bufnr)
+      local opts = { buffer = bufnr, noremap = true, silent = true, nowait = true }
+      vim.keymap.set('n', '<Esc>', api.tree.close, vim.tbl_extend('force', opts, { desc = 'Close file tree' }))
+      vim.keymap.set('n', '/', api.filter.live.start, vim.tbl_extend('force', opts, { desc = 'Filter file tree' }))
+    end,
     view = {
       side = 'left',
       width = 32,
