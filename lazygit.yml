@@ -1,0 +1,7 @@
+git:
+  autoFetch: false
+
+keybinding:
+  universal:
+    quit: [q, <esc>]
+    return: <disabled>

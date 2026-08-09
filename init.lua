@@ -99,7 +99,7 @@ do
   vim.g.maplocalleader = ' '
 
   -- Set to true if you have a Nerd Font installed and selected in the terminal
-  vim.g.have_nerd_font = false
+  vim.g.have_nerd_font = true
 
   -- [[ Setting options ]]
   --  See `:help vim.o`
@@ -136,6 +136,9 @@ do
 
   -- Keep the sign column reserved so diagnostics do not shift the buffer
   vim.o.signcolumn = 'yes'
+
+  -- Show a guide where lines reach 80 characters.
+  vim.o.colorcolumn = '80'
 
   -- Decrease update time
   vim.o.updatetime = 250
@@ -183,6 +186,7 @@ local lsp_hover_options = {
   max_height = 15,
   wrap = true,
   focusable = true,
+  focus = true,
 }
 
 local function show_hover_or_diagnostic()
@@ -315,7 +319,22 @@ do
   -- also passed explicitly in the mapping below.
   vim.lsp.handlers['textDocument/hover'] = function(err, result, ctx, config)
     config = vim.tbl_deep_extend('force', config or {}, lsp_hover_options)
-    return vim.lsp.handlers.hover(err, result, ctx, config)
+    local previous_window = vim.api.nvim_get_current_win()
+    local bufnr, win = vim.lsp.handlers.hover(err, result, ctx, config)
+    if bufnr and win and vim.api.nvim_buf_is_valid(bufnr) then
+      vim.keymap.set('n', '<Esc>', '<cmd>close<CR>', {
+        buffer = bufnr,
+        silent = true,
+        nowait = true,
+        desc = 'Close hover window',
+      })
+
+      -- LSP opens a new hover float without entering it. Enter newly opened
+      -- hovers automatically, while preserving the second `gh` toggle that
+      -- returns from an already-focused hover to the source window.
+      if win ~= previous_window and vim.api.nvim_win_is_valid(win) then vim.api.nvim_set_current_win(win) end
+    end
+    return bufnr, win
   end
 
   -- `gh` is Select mode by default. Make the hover mapping global so it also
@@ -352,10 +371,27 @@ do
   --  Use CTRL+<hjkl> to switch between windows
   --
   --  See `:help wincmd` for a list of all window commands
-  vim.keymap.set('n', '<C-h>', '<C-w><C-h>', { desc = 'Move focus to the left window' })
-  vim.keymap.set('n', '<C-l>', '<C-w><C-l>', { desc = 'Move focus to the right window' })
-  vim.keymap.set('n', '<C-j>', '<C-w><C-j>', { desc = 'Move focus to the lower window' })
-  vim.keymap.set('n', '<C-k>', '<C-w><C-k>', { desc = 'Move focus to the upper window' })
+  local function move_focus(direction)
+    local previous_window = vim.api.nvim_get_current_win()
+    vim.cmd.wincmd(direction)
+
+    -- `wincmd` is intentionally a no-op at the edge of the window layout.
+    -- A terminal cannot receive a key back from Neovim, so this cannot be
+    -- transparently bubbled to Ghostty from here.
+    return vim.api.nvim_get_current_win() ~= previous_window
+  end
+
+  vim.keymap.set('n', '<C-h>', function() move_focus 'h' end, { desc = 'Move focus to the left window' })
+  vim.keymap.set('n', '<C-l>', function() move_focus 'l' end, { desc = 'Move focus to the right window' })
+  vim.keymap.set('n', '<C-j>', function() move_focus 'j' end, { desc = 'Move focus to the lower window' })
+  vim.keymap.set('n', '<C-k>', function() move_focus 'k' end, { desc = 'Move focus to the upper window' })
+
+  -- Shift+HJKL provides a quicker directional alternative for split navigation.
+  -- Use the literal uppercase keys: terminals normally send <S-l> as `L`.
+  vim.keymap.set('n', 'H', function() move_focus 'h' end, { desc = 'Move focus to the left window' })
+  vim.keymap.set('n', 'L', function() move_focus 'l' end, { desc = 'Move focus to the right window' })
+  vim.keymap.set('n', 'J', function() move_focus 'j' end, { desc = 'Move focus to the lower window' })
+  vim.keymap.set('n', 'K', function() move_focus 'k' end, { desc = 'Move focus to the upper window' })
 
   -- NOTE: Some terminals have colliding keymaps or are not able to send distinct keycodes
   -- vim.keymap.set("n", "<C-S-h>", "<C-w>H", { desc = "Move window to the left" })
@@ -490,15 +526,60 @@ do
   vim.keymap.set('n', 'gc', function() gitsigns.nav_hunk 'next' end, { desc = '[G]it next [C]hange' })
   vim.keymap.set('n', 'gC', function() gitsigns.nav_hunk 'prev' end, { desc = '[G]it previous [C]hange' })
 
+  -- Character-level inline Git diff highlighting, toggled on demand.
+  vim.pack.add { gh 'YouSame2/inlinediff-nvim' }
+  local inlinediff = require 'inlinediff'
+  inlinediff.setup {
+    colors = {
+      InlineDiffAddContext = '#263b27',
+      InlineDiffAddChange = '#4d7535',
+      InlineDiffDeleteContext = '#3b2525',
+      InlineDiffDeleteChange = '#733b3b',
+    },
+  }
+  vim.keymap.set('n', '<leader>d', function() inlinediff.toggle() end, { desc = 'Toggle inline diff' })
+
   -- Decorated scrollbar with diagnostics, search, Git hunks, and marks.
   vim.pack.add { gh 'lewis6991/satellite.nvim' }
   require('satellite').setup {}
+
+  -- Code outline for classes, methods, functions, and other symbols.
+  -- Aerial uses Tree-sitter when available and falls back to LSP symbols.
+  vim.pack.add { gh 'stevearc/aerial.nvim' }
+  require('aerial').setup {
+    backends = { 'treesitter', 'lsp', 'markdown' },
+    layout = {
+      default_direction = 'prefer_left',
+      placement = 'edge',
+      min_width = 28,
+      max_width = { 40, 0.2 },
+      resize_to_content = true,
+    },
+    -- Aerial installs buffer-local H/L and Ctrl-J/Ctrl-K mappings for tree
+    -- navigation. Remove those overrides so the global split-focus mappings
+    -- also work while the Aerial window is focused.
+    keymaps = {
+      H = false,
+      J = false,
+      K = false,
+      L = false,
+      ['<C-j>'] = false,
+      ['<C-k>'] = false,
+    },
+    show_guides = true,
+  }
+  vim.keymap.set('n', '<leader>o', '<cmd>AerialToggle!<CR>', { desc = 'Toggle code outline' })
+
+  -- IDE-like breadcrumbs in the winbar for the current symbol context.
+  vim.pack.add { gh 'Bekaboo/dropbar.nvim' }
+  require('dropbar').setup {}
 
   -- Side-by-side Git diff review, available from Neogit when needed.
   vim.pack.add { gh 'sindrets/diffview.nvim' }
   local diffview_actions = require 'diffview.actions'
   require('diffview').setup {
     use_icons = false,
+    enhanced_diff_hl = true,
     keymaps = {
       view = {
         { 'n', 'q', diffview_actions.close, { desc = 'Close diffview' } },
@@ -512,23 +593,14 @@ do
   }
 
   -- LazyGit provides a compact file list with added/removed line counts.
-  vim.pack.add {
-    gh 'kdheepak/lazygit.nvim',
-    gh 'NeogitOrg/neogit',
-  }
+  vim.pack.add { gh 'kdheepak/lazygit.nvim' }
   vim.g.lazygit_floating_window_winblend = 0
   vim.g.lazygit_floating_window_scaling_factor = 0.9
   vim.g.lazygit_floating_window_use_plenary = 1
   vim.g.lazygit_use_neovim_remote = 1
+  vim.g.lazygit_use_custom_config_file_path = 1
+  vim.g.lazygit_config_file_path = vim.fn.stdpath('config') .. '/lazygit.yml'
   vim.keymap.set('n', '<leader>g', '<cmd>LazyGit<CR>', { desc = '[G]it status (LazyGit)' })
-
-  -- Keep Neogit available for its native staging workflow.
-  local neogit = require 'neogit'
-  neogit.setup {
-    kind = 'replace',
-    notification_icon = '●',
-  }
-  vim.keymap.set('n', '<leader>G', function() neogit.open { kind = 'replace' } end, { desc = '[G]it status (Neogit)' })
 
   -- Useful plugin to show you pending keybinds.
   vim.pack.add { gh 'folke/which-key.nvim' }
@@ -539,8 +611,8 @@ do
     -- Document existing key chains
     spec = {
       { '<leader>s', group = '[S]earch', mode = { 'n', 'v' } },
+      { '<leader>f', group = '[F]ile' },
       { '<leader>t', group = '[T]oggle' },
-      { '<leader>h', group = 'Git [H]unk', mode = { 'n', 'v' } }, -- Enable gitsigns recommended keymaps first
       { 'gr', group = 'LSP Actions', mode = { 'n' } },
     },
   }
@@ -554,6 +626,32 @@ do
   vim.o.background = 'dark'
   vim.pack.add { gh 'sainnhe/gruvbox-material' }
   vim.cmd.colorscheme 'gruvbox-material'
+
+  -- Make changed lines visible in both Diffview and inline diffs. Gruvbox's
+  -- defaults are intentionally subtle, so use explicit foreground and
+  -- background colours here.
+  for group, colors in pairs {
+    DiffAdd = { fg = '#b8bb26', bg = '#3d4f35' },
+    DiffDelete = { fg = '#fb4934', bg = '#4f3030' },
+    DiffChange = { fg = '#83a598', bg = '#3b4650' },
+    DiffText = { fg = '#ebdbb2', bg = '#5b6b3b', bold = true },
+    DiffviewDiffAdd = { fg = '#b8bb26', bg = '#3d4f35' },
+    DiffviewDiffDelete = { fg = '#fb4934', bg = '#4f3030' },
+    DiffviewDiffAddAsDelete = { fg = '#fb4934', bg = '#4f3030' },
+    DiffviewDiffDeleteDim = { fg = '#fb4934', bg = '#4f3030' },
+    DiffviewDiffChange = { fg = '#83a598', bg = '#3b4650' },
+    DiffviewDiffText = { fg = '#ebdbb2', bg = '#5b6b3b', bold = true },
+    InlineDiffAddContext = { fg = '#b8bb26', bg = '#263b27' },
+    InlineDiffAddChange = { fg = '#ebdbb2', bg = '#4d7535', bold = true },
+    InlineDiffDeleteContext = { fg = '#fb4934', bg = '#3b2525' },
+    InlineDiffDeleteChange = { fg = '#ebdbb2', bg = '#733b3b', bold = true },
+  } do
+    vim.api.nvim_set_hl(0, group, colors)
+  end
+
+  vim.api.nvim_set_hl(0, 'StatuslineGitAdd', { fg = '#a9b665' })
+  vim.api.nvim_set_hl(0, 'StatuslineGitRemove', { fg = '#ea6962' })
+  vim.api.nvim_set_hl(0, 'StatuslineGitFiles', { fg = '#7daea3' })
 
   -- [[ Hop.nvim ]]
   -- An EasyMotion-like word jump with labels.
@@ -603,14 +701,98 @@ do
   --  You could remove this setup call if you don't like it,
   --  and try some other statusline plugin
   local statusline = require 'mini.statusline'
-  -- Set `use_icons` to true if you have a Nerd Font
-  statusline.setup { use_icons = vim.g.have_nerd_font }
 
-  -- You can configure sections in the statusline by overriding their
-  -- default behavior. For example, here we set the section for
-  -- cursor location to LINE:COLUMN
-  ---@diagnostic disable-next-line: duplicate-set-field
-  statusline.section_location = function() return '%2l:%-2v' end
+  -- Keep the statusline focused on the essentials: mode, branch, Git diff,
+  -- changed-file count, and language. The mode and filetype sections use
+  -- Nerd Font icons.
+  local gitsigns = require 'gitsigns'
+  local changed_file_count
+  local changed_file_root
+  local changed_file_job
+
+  local function refresh_changed_file_count(force)
+    local root = vim.fs.root(0, { '.git' })
+    if not root then
+      changed_file_count = nil
+      changed_file_root = nil
+      return
+    end
+
+    if changed_file_job or (not force and changed_file_root == root and changed_file_count ~= nil) then return end
+
+    changed_file_job = vim.system({ 'git', 'status', '--porcelain=v1' }, { cwd = root, text = true }, function(result)
+      local count = 0
+      for _ in (result.stdout or ''):gmatch '[^\r\n]+' do
+        count = count + 1
+      end
+
+      vim.schedule(function()
+        changed_file_job = nil
+        changed_file_root = root
+        changed_file_count = result.code == 0 and count or 0
+        vim.cmd.redrawstatus()
+      end)
+    end)
+  end
+
+  local function current_diff()
+    local ok, hunks = pcall(gitsigns.get_hunks, 0)
+    if not ok or not hunks then return 0, 0 end
+
+    local added, removed = 0, 0
+    for _, hunk in ipairs(hunks) do
+      added = added + (hunk.added.count or 0)
+      removed = removed + (hunk.removed.count or 0)
+    end
+
+    return added, removed
+  end
+
+  local function active_statusline()
+    refresh_changed_file_count()
+
+    local mode, mode_hl = statusline.section_mode { trunc_width = 120 }
+    local git = statusline.section_git { trunc_width = 0, icon = '' }
+    local added, removed = current_diff()
+    local git_info = { { hl = 'MiniStatuslineDevinfo', strings = { git } } }
+    if added > 0 then
+      table.insert(git_info, { hl = 'StatuslineGitAdd', strings = { '+' .. added } })
+    end
+    if removed > 0 then
+      table.insert(git_info, { hl = 'StatuslineGitRemove', strings = { '-' .. removed } })
+    end
+    if changed_file_count ~= nil then
+      table.insert(git_info, { hl = 'StatuslineGitFiles', strings = { '󰈔 ' .. changed_file_count } })
+    end
+
+    local language = vim.bo.filetype
+    if language ~= '' and vim.g.have_nerd_font then
+      local icon = select(1, MiniIcons.get('filetype', language))
+      language = icon .. ' ' .. language
+    end
+
+    local groups = { { hl = mode_hl, strings = { mode } } }
+    vim.list_extend(groups, git_info)
+    table.insert(groups, '%=')
+    table.insert(groups, { hl = 'MiniStatuslineFileinfo', strings = { language } })
+    return statusline.combine_groups(groups)
+  end
+
+  local statusline_git_group = vim.api.nvim_create_augroup('statusline-git', { clear = true })
+  vim.api.nvim_create_autocmd({ 'BufEnter', 'BufWritePost', 'FocusGained' }, {
+    group = statusline_git_group,
+    callback = function() refresh_changed_file_count(true) end,
+  })
+  vim.api.nvim_create_autocmd('User', {
+    pattern = 'GitSignsUpdate',
+    group = statusline_git_group,
+    callback = function() refresh_changed_file_count(true) end,
+  })
+
+  statusline.setup {
+    use_icons = vim.g.have_nerd_font,
+    content = { active = active_statusline },
+  }
 
   -- ... and there is more!
   --  Check out: https://github.com/nvim-mini/mini.nvim
@@ -721,7 +903,13 @@ do
   -- See `:help telescope` and `:help telescope.setup()`
   require('telescope').setup {
     defaults = {
-      layout_config = { prompt_position = 'top' },
+      -- Put the prompt first and sort the best matches from top to bottom.
+      sorting_strategy = 'ascending',
+      layout_strategy = 'vertical',
+      layout_config = {
+        prompt_position = 'top',
+        mirror = true,
+      },
       -- Keep the filename prominent while retaining its directory context.
       path_display = { 'filename_first' },
     },
@@ -739,7 +927,7 @@ do
   vim.keymap.set('n', '<leader>sh', builtin.help_tags, { desc = '[S]earch [H]elp' })
   vim.keymap.set('n', '<leader>sk', builtin.keymaps, { desc = '[S]earch [K]eymaps' })
   vim.keymap.set('n', '<leader>sf', builtin.find_files, { desc = '[S]earch [F]iles' })
-  vim.keymap.set('n', '<leader>f', function()
+  vim.keymap.set('n', '<leader>ff', function()
     builtin.find_files {
       -- Keep the prompt and result list together at the top of the picker.
       layout_strategy = 'vertical',
@@ -759,7 +947,7 @@ do
   vim.keymap.set('n', '<leader>sr', builtin.resume, { desc = '[S]earch [R]esume' })
   vim.keymap.set('n', '<leader>s.', builtin.oldfiles, { desc = '[S]earch Recent Files ("." for repeat)' })
   vim.keymap.set('n', '<leader>sc', builtin.commands, { desc = '[S]earch [C]ommands' })
-  vim.keymap.set('n', '<leader><leader>', builtin.buffers, { desc = '[ ] Find existing buffers' })
+  vim.keymap.set('n', '<leader>fb', builtin.buffers, { desc = '[F]ind existing [B]uffers' })
 
   -- Add Telescope-based LSP pickers when an LSP attaches to a buffer.
   -- If you later switch picker plugins, this is where to update these mappings.
@@ -924,7 +1112,7 @@ do
       --
       -- This may be unwanted, since they displace some of your code
       if client and client:supports_method('textDocument/inlayHint', event.buf) then
-        map('<leader>th', function() vim.lsp.inlay_hint.enable(not vim.lsp.inlay_hint.is_enabled { bufnr = event.buf }) end, '[T]oggle Inlay [H]ints')
+        map('<leader>h', function() vim.lsp.inlay_hint.enable(not vim.lsp.inlay_hint.is_enabled { bufnr = event.buf }) end, 'Toggle Inlay [H]ints')
       end
     end,
   })
@@ -938,6 +1126,7 @@ do
     -- gopls = {},
     pyright = {},
     rust_analyzer = {},
+    taplo = {}, -- TOML language server
     html = {
       -- Django templates still contain ordinary HTML that the HTML language
       -- server can understand. Keep the template filetype so other tooling
@@ -1176,7 +1365,7 @@ do
   require('treesitter-context').setup { max_lines = 3 }
 
   -- Ensure basic parsers are installed
-  local parsers = { 'bash', 'c', 'css', 'diff', 'html', 'javascript', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'vim', 'vimdoc' }
+  local parsers = { 'bash', 'c', 'css', 'diff', 'html', 'javascript', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'rust', 'toml', 'vim', 'vimdoc' }
   require('nvim-treesitter').install(parsers)
 
   ---@param buf integer
