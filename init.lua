@@ -185,6 +185,31 @@ local lsp_hover_options = {
   focusable = true,
 }
 
+local function show_hover_or_diagnostic()
+  local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+  row = row - 1
+  local has_diagnostic = false
+
+  for _, diagnostic in ipairs(vim.diagnostic.get(0, { lnum = row })) do
+    local start_col = diagnostic.col or 0
+    local end_col = math.max(diagnostic.end_col or start_col + 1, start_col + 1)
+    local severity = diagnostic.severity
+    local is_error_or_warning = severity == vim.diagnostic.severity.ERROR or severity == vim.diagnostic.severity.WARN
+    if is_error_or_warning and col >= start_col and col < end_col then
+      has_diagnostic = true
+      break
+    end
+  end
+
+  if has_diagnostic then
+    vim.diagnostic.open_float { scope = 'cursor', focus = false }
+  elseif #vim.lsp.get_clients { bufnr = 0 } > 0 then
+    vim.lsp.buf.hover(vim.tbl_extend('force', {}, lsp_hover_options))
+  else
+    vim.notify('No active LSP client for this buffer', vim.log.levels.INFO)
+  end
+end
+
 local lsp_convert_input_to_markdown_lines = vim.lsp.util.convert_input_to_markdown_lines
 local function strip_inline_data_images(value)
   if type(value) == 'string' then
@@ -292,6 +317,10 @@ do
     config = vim.tbl_deep_extend('force', config or {}, lsp_hover_options)
     return vim.lsp.handlers.hover(err, result, ctx, config)
   end
+
+  -- `gh` is Select mode by default. Make the hover mapping global so it also
+  -- works before LspAttach fires (and does not unexpectedly enter Select mode).
+  vim.keymap.set('n', 'gh', show_hover_or_diagnostic, { desc = 'Show hover or diagnostic' })
 
   vim.keymap.set('n', 'gl', function()
     vim.diagnostic.open_float {
@@ -858,28 +887,6 @@ do
       --  For example, in C this would take you to the header.
       map('grD', vim.lsp.buf.declaration, '[G]oto [D]eclaration')
       map('gd', vim.lsp.buf.definition, '[G]oto [D]efinition')
-      map('gh', function()
-        local row, col = unpack(vim.api.nvim_win_get_cursor(0))
-        row = row - 1
-        local has_diagnostic = false
-
-        for _, diagnostic in ipairs(vim.diagnostic.get(0, { lnum = row })) do
-          local start_col = diagnostic.col or 0
-          local end_col = math.max(diagnostic.end_col or start_col + 1, start_col + 1)
-          local severity = diagnostic.severity
-          local is_error_or_warning = severity == vim.diagnostic.severity.ERROR or severity == vim.diagnostic.severity.WARN
-          if is_error_or_warning and col >= start_col and col < end_col then
-            has_diagnostic = true
-            break
-          end
-        end
-
-        if has_diagnostic then
-          vim.diagnostic.open_float { scope = 'cursor', focus = false }
-        else
-          vim.lsp.buf.hover(vim.tbl_extend('force', {}, lsp_hover_options))
-        end
-      end, '[H]over or diagnostic')
       map('gp', function() vim.diagnostic.jump { count = 1 } end, '[G]oto next diagnostic')
       map('gP', function() vim.diagnostic.jump { count = -1 } end, '[G]oto previous diagnostic')
 
@@ -931,7 +938,19 @@ do
     -- gopls = {},
     pyright = {},
     rust_analyzer = {},
-    html = {},
+    html = {
+      -- Django templates still contain ordinary HTML that the HTML language
+      -- server can understand. Keep the template filetype so other tooling
+      -- can distinguish it from standalone HTML files.
+      filetypes = { 'html', 'htmldjango' },
+      init_options = {
+        provideFormatter = true,
+        embeddedLanguages = {
+          css = true,
+          javascript = true,
+        },
+      },
+    },
     cssls = {},
     omnisharp = {}, -- C#
     intelephense = {}, -- PHP
@@ -1157,7 +1176,7 @@ do
   require('treesitter-context').setup { max_lines = 3 }
 
   -- Ensure basic parsers are installed
-  local parsers = { 'bash', 'c', 'css', 'diff', 'html', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'vim', 'vimdoc' }
+  local parsers = { 'bash', 'c', 'css', 'diff', 'html', 'javascript', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'vim', 'vimdoc' }
   require('nvim-treesitter').install(parsers)
 
   ---@param buf integer
@@ -1180,6 +1199,10 @@ do
     -- Enable treesitter based indentation
     if has_indent_query then vim.bo.indentexpr = "v:lua.require'nvim-treesitter'.indentexpr()" end
   end
+
+  -- There is no separate HTML parser for Django templates. Use the HTML
+  -- parser for the HTML portions while preserving the `htmldjango` filetype.
+  vim.treesitter.language.register('html', 'htmldjango')
 
   local available_parsers = require('nvim-treesitter').get_available()
   vim.api.nvim_create_autocmd('FileType', {
@@ -1214,8 +1237,16 @@ do
     },
   }
   vim.api.nvim_create_autocmd('FileType', {
-    pattern = { 'typescript', 'typescriptreact', 'javascript', 'javascriptreact' },
-    callback = function() otter.activate({ 'css', 'html' }) end,
+    pattern = { 'typescript', 'typescriptreact', 'javascript', 'javascriptreact', 'htmldjango' },
+    callback = function(args)
+      if args.match == 'htmldjango' then
+        -- Extract <script> and <style> blocks so JavaScript/CSS language
+        -- servers can operate on them through Otter.
+        otter.activate({ 'javascript', 'css' })
+      else
+        otter.activate({ 'css', 'html' })
+      end
+    end,
   })
 end
 
