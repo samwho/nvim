@@ -187,6 +187,8 @@ local lsp_hover_options = {
   wrap = true,
   focusable = true,
   focus = true,
+  -- Keep the hover open while moving through it; <Esc> closes it explicitly.
+  close_events = {},
 }
 
 local function show_hover_or_diagnostic()
@@ -212,6 +214,28 @@ local function show_hover_or_diagnostic()
   else
     vim.notify('No active LSP client for this buffer', vim.log.levels.INFO)
   end
+end
+
+local function configure_hover_window(bufnr, win)
+  if not bufnr or not win or not vim.api.nvim_buf_is_valid(bufnr) or not vim.api.nvim_win_is_valid(win) then return end
+
+  vim.keymap.set('n', '<Esc>', '<cmd>close<CR>', {
+    buffer = bufnr,
+    silent = true,
+    nowait = true,
+    desc = 'Close hover window',
+  })
+  vim.api.nvim_set_current_win(win)
+end
+
+-- `vim.lsp.buf.hover()` opens previews asynchronously and does not focus a new
+-- float itself. Wrap the preview helper so this also works on Neovim versions
+-- where the hover request bypasses the deprecated global hover handler.
+local lsp_open_floating_preview = vim.lsp.util.open_floating_preview
+vim.lsp.util.open_floating_preview = function(contents, syntax, opts)
+  local bufnr, win = lsp_open_floating_preview(contents, syntax, opts)
+  if opts and opts.focus_id == 'textDocument/hover' then configure_hover_window(bufnr, win) end
+  return bufnr, win
 end
 
 local lsp_convert_input_to_markdown_lines = vim.lsp.util.convert_input_to_markdown_lines
@@ -319,21 +343,8 @@ do
   -- also passed explicitly in the mapping below.
   vim.lsp.handlers['textDocument/hover'] = function(err, result, ctx, config)
     config = vim.tbl_deep_extend('force', config or {}, lsp_hover_options)
-    local previous_window = vim.api.nvim_get_current_win()
     local bufnr, win = vim.lsp.handlers.hover(err, result, ctx, config)
-    if bufnr and win and vim.api.nvim_buf_is_valid(bufnr) then
-      vim.keymap.set('n', '<Esc>', '<cmd>close<CR>', {
-        buffer = bufnr,
-        silent = true,
-        nowait = true,
-        desc = 'Close hover window',
-      })
-
-      -- LSP opens a new hover float without entering it. Enter newly opened
-      -- hovers automatically, while preserving the second `gh` toggle that
-      -- returns from an already-focused hover to the source window.
-      if win ~= previous_window and vim.api.nvim_win_is_valid(win) then vim.api.nvim_set_current_win(win) end
-    end
+    configure_hover_window(bufnr, win)
     return bufnr, win
   end
 
@@ -567,8 +578,11 @@ do
       ['<C-k>'] = false,
     },
     show_guides = true,
+    -- Return to the source buffer after selecting a symbol.
+    close_on_select = true,
   }
-  vim.keymap.set('n', '<leader>o', '<cmd>AerialToggle!<CR>', { desc = 'Toggle code outline' })
+  -- Without the bang, Aerial focuses the outline when it opens.
+  vim.keymap.set('n', '<leader>o', '<cmd>AerialToggle<CR>', { desc = 'Toggle code outline' })
 
   -- IDE-like breadcrumbs in the winbar for the current symbol context.
   vim.pack.add { gh 'Bekaboo/dropbar.nvim' }

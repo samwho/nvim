@@ -81,7 +81,7 @@ The most-used mappings are below. `<leader>` means `,`.
 | `<leader>sn` | Search Neovim configuration files |
 | `<leader>/` | Fuzzy-search the current buffer |
 | `<leader>w` | Hop to a labelled word |
-| `<leader>o` | Toggle the Aerial code outline |
+| `<leader>o` | Toggle the Aerial code outline (opens focused; selecting a symbol closes it) |
 | `<C-h/j/k/l>` | Move to the left/down/up/right split |
 | `H/J/K/L` | Faster split navigation in the same directions |
 | `<Esc>` in normal mode | Clear search highlighting |
@@ -95,7 +95,7 @@ filtered.
 
 | Mapping | Action |
 | --- | --- |
-| `gh` | Show the diagnostic at the cursor, or LSP hover when there is no error/warning |
+| `gh` | Show the diagnostic at the cursor, or a focused, scrollable LSP hover when there is no error/warning |
 | `gl` | Show the complete diagnostic at the cursor |
 | `<leader>q` | Put diagnostics in the location list |
 | `gp` / `gP` | Next / previous diagnostic |
@@ -147,7 +147,8 @@ unfocused float.
 
 `gh` chooses an error or warning under the cursor before falling back to LSP
 hover. Hover windows are rounded, titled `Hover`, wrapped, focused on open,
-and limited to 80×15. Escape closes a hover. Inline `data:image/...` Markdown
+and limited to 80×15. They can be scrolled with normal movement keys, and
+Escape closes a hover. Inline `data:image/...` Markdown
 images are removed before hover content is rendered, preventing very large
 embedded images from taking over the preview.
 
