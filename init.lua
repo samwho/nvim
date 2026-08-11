@@ -583,8 +583,14 @@ do
   end
   vim.o.statuscolumn = '%C%{%v:lua.gitsigns_statuscolumn()%}%=%{%v:virtnum > 0 ? "" : "%l"%}'
 
-  vim.keymap.set('n', 'gc', function() gitsigns.nav_hunk 'next' end, { desc = '[G]it next [C]hange' })
-  vim.keymap.set('n', 'gC', function() gitsigns.nav_hunk 'prev' end, { desc = '[G]it previous [C]hange' })
+  -- Gitsigns defaults to greedy navigation, which re-runs the full diff when
+  -- 'diffopt' includes linematch. Use the already-cached hunks instead.
+  -- Neovim's built-in `gcc` comment mapping is a longer prefix of `gc` and
+  -- forces a timeout before navigation can run, so remove that conflicting
+  -- normal-mode mapping. Keep `gc` silent so the key sequence is not echoed.
+  pcall(vim.keymap.del, 'n', 'gcc')
+  vim.keymap.set('n', 'gc', function() gitsigns.nav_hunk('next', { greedy = false }) end, { desc = '[G]it next [C]hange', nowait = true, silent = true })
+  vim.keymap.set('n', 'gC', function() gitsigns.nav_hunk('prev', { greedy = false }) end, { desc = '[G]it previous [C]hange' })
 
   -- Character-level inline Git diff highlighting, toggled on demand.
   vim.pack.add { gh 'YouSame2/inlinediff-nvim' }
