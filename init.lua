@@ -572,6 +572,17 @@ do
       untracked = { text = '┆' },
     },
   }
+
+  -- Native signs only occupy the first screen row of a wrapped line. Render
+  -- gitsigns through statuscolumn instead; Neovim evaluates it for every
+  -- screen row, so the Git marker continues through wrapped text. Fall back
+  -- to the native sign item so diagnostic signs remain visible elsewhere.
+  _G.gitsigns_statuscolumn = function()
+    local sign = gitsigns.statuscolumn()
+    return sign:match '%S' and sign or '%s'
+  end
+  vim.o.statuscolumn = '%C%{%v:lua.gitsigns_statuscolumn()%}%=%{%v:virtnum > 0 ? "" : "%l"%}'
+
   vim.keymap.set('n', 'gc', function() gitsigns.nav_hunk 'next' end, { desc = '[G]it next [C]hange' })
   vim.keymap.set('n', 'gC', function() gitsigns.nav_hunk 'prev' end, { desc = '[G]it previous [C]hange' })
 
