@@ -297,6 +297,15 @@ do
   vim.keymap.set({ 'n', 'x' }, 'j', 'gj', { desc = 'Move down by display line' })
   vim.keymap.set({ 'n', 'x' }, 'k', 'gk', { desc = 'Move up by display line' })
 
+  local function copy_file_reference(start_line, end_line)
+    local file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':.')
+    if file == '' then file = '[No Name]' end
+
+    local reference = end_line and string.format('%s:%d-%d', file, start_line, end_line)
+      or string.format('%s:%d', file, start_line)
+    vim.fn.setreg('+', reference)
+  end
+
   -- Copy a visual selection as a file and line-range reference for Pi.
   vim.keymap.set('x', '<leader>y', function()
     -- In a visual-mode mapping, the `<`/`>` marks may not have been updated
@@ -304,14 +313,11 @@ do
     local start_line = vim.fn.line 'v'
     local end_line = vim.fn.line '.'
     if start_line > end_line then start_line, end_line = end_line, start_line end
-
-    local file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':.')
-    if file == '' then file = '[No Name]' end
-
-    local reference = string.format('%s:%d-%d', file, start_line, end_line)
-    vim.fn.setreg('+', reference)
-    vim.notify('Copied reference: ' .. reference)
+    copy_file_reference(start_line, end_line)
   end, { desc = 'Copy file/line reference' })
+
+  -- With no visual selection, copy just the current file and line.
+  vim.keymap.set('n', '<leader>y', function() copy_file_reference(vim.fn.line '.') end, { desc = 'Copy file/line reference' })
 
   -- Diagnostic Config & Keymaps
   --  See `:help vim.diagnostic.Opts`
@@ -1029,19 +1035,103 @@ do
   vim.keymap.set('n', '<leader>sh', builtin.help_tags, { desc = '[S]earch [H]elp' })
   vim.keymap.set('n', '<leader>sk', builtin.keymaps, { desc = '[S]earch [K]eymaps' })
   vim.keymap.set('n', '<leader>sf', builtin.find_files, { desc = '[S]earch [F]iles' })
+  local file_picker_layout = {
+    layout_strategy = 'vertical',
+    layout_config = {
+      prompt_position = 'top',
+      mirror = true,
+      width = 0.7,
+      height = 0.85,
+      preview_height = 0.35,
+    },
+  }
+
+  local pickers = require 'telescope.pickers'
+  local finders = require 'telescope.finders'
+  local telescope_config = require('telescope.config').values
+  local make_entry = require 'telescope.make_entry'
+
+  local function recent_files()
+    local current_buffer = vim.api.nvim_get_current_buf()
+    local current_file = vim.api.nvim_buf_get_name(current_buffer)
+    local results = {}
+    local seen = {}
+
+    local function add_file(file)
+      if file == '' or file == current_file or seen[file] then return end
+      local stat = vim.uv.fs_stat(file)
+      if stat and stat.type == 'file' then
+        seen[file] = true
+        results[#results + 1] = file
+      end
+    end
+
+    -- Include files opened during this session, followed by ShaDa history.
+    local buffers = vim.fn.getbufinfo { buflisted = 1 }
+    table.sort(buffers, function(a, b) return (a.lastused or 0) > (b.lastused or 0) end)
+    for _, buffer in ipairs(buffers) do
+      add_file(buffer.name)
+    end
+    for _, file in ipairs(vim.v.oldfiles) do
+      add_file(file)
+    end
+
+    return results
+  end
+
+  -- Start with recent files, then switch to the normal rg-backed file list as
+  -- soon as the prompt is non-empty. This keeps <leader>ff useful for both
+  -- quick access and searching the entire workspace.
   vim.keymap.set('n', '<leader>ff', function()
-    builtin.find_files {
-      -- Keep the prompt and result list together at the top of the picker.
-      layout_strategy = 'vertical',
-      layout_config = {
-        prompt_position = 'top',
-        mirror = true,
-        width = 0.7,
-        height = 0.85,
-        preview_height = 0.35,
-      },
+    local opts = vim.tbl_extend('force', file_picker_layout, {
+      prompt_title = 'Recent Files',
+      __locations_input = true,
+    })
+    local recent = recent_files()
+    local function all_files_command()
+      if vim.fn.executable 'rg' == 1 then return { 'rg', '--files', '--color', 'never' } end
+      if vim.fn.executable 'fd' == 1 then return { 'fd', '--type', 'f', '--color', 'never' } end
+      if vim.fn.executable 'fdfind' == 1 then return { 'fdfind', '--type', 'f', '--color', 'never' } end
+      return { 'find', '.', '-type', 'f', '-not', '-path', '*/.*' }
+    end
+
+    local entry_maker = make_entry.gen_from_file(opts)
+    local recent_finder = finders.new_table {
+      results = recent,
+      entry_maker = entry_maker,
     }
-  end, { desc = '[F]ind a file' })
+    -- Use Telescope's one-shot finder for the full file list. It caches the
+    -- results, just like builtin.find_files, so typing does not restart rg.
+    local all_files_finder = finders.new_oneshot_job(all_files_command(), {
+      cwd = opts.cwd,
+      entry_maker = entry_maker,
+    })
+    local showing_all_files = false
+
+    pickers
+      .new(opts, {
+        finder = recent_finder,
+        on_input_filter_cb = function(prompt)
+          local should_show_all_files = prompt ~= ''
+          if should_show_all_files == showing_all_files then return end
+          showing_all_files = should_show_all_files
+          return { updated_finder = should_show_all_files and all_files_finder or recent_finder }
+        end,
+        previewer = telescope_config.grep_previewer(opts),
+        sorter = telescope_config.file_sorter(opts),
+      })
+      :find()
+  end, { desc = '[F]ind recent files or search all files' })
+
+  vim.keymap.set('n', '<leader>fd', function()
+    local filename = vim.api.nvim_buf_get_name(0)
+    local cwd = filename ~= '' and vim.fs.dirname(vim.fs.normalize(filename)) or vim.fn.getcwd()
+    builtin.find_files(vim.tbl_extend('force', file_picker_layout, {
+      cwd = cwd,
+      prompt_title = 'Files in ' .. cwd,
+    }))
+  end, { desc = '[F]ind files in current [D]irectory' })
+
   vim.keymap.set('n', '<leader>ss', builtin.builtin, { desc = '[S]earch [S]elect Telescope' })
   vim.keymap.set({ 'n', 'v' }, '<leader>sw', builtin.grep_string, { desc = '[S]earch current [W]ord' })
   vim.keymap.set('n', '<leader>sg', builtin.live_grep, { desc = '[S]earch by [G]rep' })

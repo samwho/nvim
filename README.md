@@ -74,7 +74,8 @@ The most-used mappings are below. `<leader>` means `,`.
 | Mapping | Action |
 | --- | --- |
 | `<leader>e` | Toggle the full-screen `nvim-tree` file chooser |
-| `<leader>ff` | Find a file with the custom Telescope layout |
+| `<leader>ff` | Show recent files; typing searches all files with Telescope |
+| `<leader>fd` | Find files in the current file's directory |
 | `<leader>sf` | Telescope file search |
 | `<leader>fb` | Find an existing buffer |
 | `<leader>sn` | Search Neovim configuration files |
@@ -109,15 +110,16 @@ filtered.
 | `<leader>s` | Telescope document symbols when an LSP is attached |
 | `<leader>h` | Toggle LSP inlay hints when supported |
 | `<leader>F` | Format the buffer asynchronously |
-| `<leader>y` in visual mode | Copy `relative/file: start-end` to the system clipboard |
+| `<leader>y` | Copy `relative/file:line` (normal) or `relative/file: start-end` (visual) to the system clipboard |
 
-The visual `<leader>y` mapping is intended for making file/line references for
-Pi. Unnamed buffers are labelled `[No Name]`.
+The `<leader>y` mapping is intended for making file/line references for Pi.
+Unnamed buffers are labelled `[No Name]`; it produces no notification.
 
 Other Telescope mappings include `<leader>sh` (help), `<leader>sk` (keymaps),
 `<leader>ss` (Telescope pickers), `<leader>sw` (word), `<leader>sg` (live grep),
 `<leader>sd` (diagnostics), `<leader>sr` (resume), `<leader>s.` (recent files),
-`<leader>sc` (commands), and `<leader>s/` (grep open files).
+`<leader>sc` (commands), and `<leader>s/` (grep open files). `<leader>ff` starts with recent files, then searches all files once you type;
+`<leader>fd` searches the current file's directory.
 
 ### Git
 
