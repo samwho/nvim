@@ -130,6 +130,10 @@ do
   -- Enable undo/redo changes even after closing and reopening a file
   vim.o.undofile = true
 
+  -- Reload files changed on disk when the buffer is clean. A modified buffer
+  -- is handled by the FileChangedShell autocmd below.
+  vim.o.autoread = true
+
   -- Case-insensitive searching UNLESS \C or one or more capital letters in the search term
   vim.o.ignorecase = true
   vim.o.smartcase = true
@@ -159,7 +163,7 @@ do
   --   See `:help lua-options`
   --   and `:help lua-guide-options`
   vim.o.list = true
-  vim.opt.listchars = { tab = '» ', trail = '·', nbsp = '␣' }
+  vim.opt.listchars = { tab = '  ', trail = '·', nbsp = '␣' }
 
   -- Preview substitutions live, as you type!
   vim.o.inccommand = 'split'
@@ -421,6 +425,36 @@ do
     group = vim.api.nvim_create_augroup('kickstart-highlight-yank', { clear = true }),
     callback = function() vim.hl.on_yank() end,
   })
+
+  -- Detect external edits promptly. Clean buffers are reloaded automatically
+  -- via 'autoread'; modified buffers get a synchronous choice so the decision
+  -- is made while Neovim is handling the FileChangedShell event.
+  local external_file_changes = vim.api.nvim_create_augroup('external-file-changes', { clear = true })
+  vim.api.nvim_create_autocmd('FileChangedShell', {
+    group = external_file_changes,
+    callback = function(args)
+      if vim.v.fcs_reason ~= 'conflict' then
+        vim.v.fcs_choice = 'edit'
+        return
+      end
+
+      local name = vim.fn.fnamemodify(args.file, ':~:.')
+      local choice = vim.fn.confirm(
+        ('%s\n\nChanged on disk while this buffer has unsaved changes.'):format(name),
+        '&Keep buffer\n&Reload from disk',
+        1
+      )
+
+      -- Leaving v:fcs_choice empty keeps the in-memory buffer. Choosing edit
+      -- reloads the file and updates its encoding/fileformat detection.
+      if choice == 2 then vim.v.fcs_choice = 'edit' end
+    end,
+  })
+
+  vim.api.nvim_create_autocmd({ 'FocusGained', 'CursorHold', 'CursorHoldI' }, {
+    group = external_file_changes,
+    callback = function() vim.cmd 'checktime' end,
+  })
 end
 
 -- ============================================================
@@ -588,7 +622,7 @@ do
   vim.pack.add { gh 'Bekaboo/dropbar.nvim' }
   require('dropbar').setup {}
 
-  -- Side-by-side Git diff review, available from Neogit when needed.
+  -- Side-by-side Git diff review when needed.
   vim.pack.add { gh 'sindrets/diffview.nvim' }
   local diffview_actions = require 'diffview.actions'
   require('diffview').setup {
@@ -605,16 +639,6 @@ do
       },
     },
   }
-
-  -- LazyGit provides a compact file list with added/removed line counts.
-  vim.pack.add { gh 'kdheepak/lazygit.nvim' }
-  vim.g.lazygit_floating_window_winblend = 0
-  vim.g.lazygit_floating_window_scaling_factor = 0.9
-  vim.g.lazygit_floating_window_use_plenary = 1
-  vim.g.lazygit_use_neovim_remote = 1
-  vim.g.lazygit_use_custom_config_file_path = 1
-  vim.g.lazygit_config_file_path = vim.fn.stdpath('config') .. '/lazygit.yml'
-  vim.keymap.set('n', '<leader>g', '<cmd>LazyGit<CR>', { desc = '[G]it status (LazyGit)' })
 
   -- Useful plugin to show you pending keybinds.
   vim.pack.add { gh 'folke/which-key.nvim' }
@@ -716,13 +740,16 @@ do
   --  and try some other statusline plugin
   local statusline = require 'mini.statusline'
 
-  -- Keep the statusline focused on the essentials: mode, branch, Git diff,
-  -- changed-file count, and language. The mode and filetype sections use
-  -- Nerd Font icons.
-  local gitsigns = require 'gitsigns'
+  -- Keep the statusline focused on the essentials: mode, repository-wide Git
+  -- diff, changed-file count, and language. Git commands run asynchronously
+  -- and their results are cached so redrawing the statusline stays cheap.
   local changed_file_count
   local changed_file_root
   local changed_file_job
+  local overall_added
+  local overall_removed
+  local overall_diff_root
+  local overall_diff_job
 
   local function refresh_changed_file_count(force)
     local root = vim.fs.root(0, { '.git' })
@@ -749,26 +776,60 @@ do
     end)
   end
 
-  local function current_diff()
-    local ok, hunks = pcall(gitsigns.get_hunks, 0)
-    if not ok or not hunks then return 0, 0 end
+  local function count_untracked_lines(root, paths)
+    local count = 0
+    for relative_path in (paths or ''):gmatch '([^%z]+)%z' do
+      local file = io.open(vim.fs.joinpath(root, relative_path), 'rb')
+      if file then
+        local contents = file:read '*a' or ''
+        file:close()
+        -- Git does not report line deltas for binary files.
+        if not contents:find('\0', 1, true) and #contents > 0 then
+          count = count + select(2, contents:gsub('\n', ''))
+          if contents:sub(-1) ~= '\n' then count = count + 1 end
+        end
+      end
+    end
+    return count
+  end
 
-    local added, removed = 0, 0
-    for _, hunk in ipairs(hunks) do
-      added = added + (hunk.added.count or 0)
-      removed = removed + (hunk.removed.count or 0)
+  local function refresh_overall_diff(force)
+    local root = vim.fs.root(0, { '.git' })
+    if not root then
+      overall_added = nil
+      overall_removed = nil
+      overall_diff_root = nil
+      return
     end
 
-    return added, removed
+    if overall_diff_job or (not force and overall_diff_root == root and overall_added ~= nil) then return end
+
+    -- HEAD includes staged and unstaged tracked changes. Untracked files are
+    -- counted separately as additions. Both Git commands run asynchronously.
+    overall_diff_job = vim.system({ 'git', 'diff', 'HEAD', '--shortstat' }, { cwd = root, text = true }, function(result)
+      local stdout = result.stdout or ''
+      local added = tonumber(stdout:match '(%d+) insertion') or 0
+      local removed = tonumber(stdout:match '(%d+) deletion') or 0
+
+      vim.system({ 'git', 'ls-files', '--others', '--exclude-standard', '-z' }, { cwd = root, text = true }, function(untracked)
+        vim.schedule(function()
+          overall_diff_job = nil
+          overall_diff_root = root
+          overall_added = result.code == 0 and added + count_untracked_lines(root, untracked.stdout) or 0
+          overall_removed = result.code == 0 and removed or 0
+          vim.cmd.redrawstatus()
+        end)
+      end)
+    end)
   end
 
   local function active_statusline()
     refresh_changed_file_count()
+    refresh_overall_diff()
 
     local mode, mode_hl = statusline.section_mode { trunc_width = 120 }
-    local git = statusline.section_git { trunc_width = 0, icon = '' }
-    local added, removed = current_diff()
-    local git_info = { { hl = 'MiniStatuslineDevinfo', strings = { git } } }
+    local added, removed = overall_added or 0, overall_removed or 0
+    local git_info = {}
     if added > 0 then
       table.insert(git_info, { hl = 'StatuslineGitAdd', strings = { '+' .. added } })
     end
@@ -793,14 +854,20 @@ do
   end
 
   local statusline_git_group = vim.api.nvim_create_augroup('statusline-git', { clear = true })
-  vim.api.nvim_create_autocmd({ 'BufEnter', 'BufWritePost', 'FocusGained' }, {
+  vim.api.nvim_create_autocmd({ 'BufEnter', 'BufWritePost', 'FocusGained', 'ShellCmdPost', 'TermLeave' }, {
     group = statusline_git_group,
-    callback = function() refresh_changed_file_count(true) end,
+    callback = function()
+      refresh_changed_file_count(true)
+      refresh_overall_diff(true)
+    end,
   })
   vim.api.nvim_create_autocmd('User', {
     pattern = 'GitSignsUpdate',
     group = statusline_git_group,
-    callback = function() refresh_changed_file_count(true) end,
+    callback = function()
+      refresh_changed_file_count(true)
+      refresh_overall_diff(true)
+    end,
   })
 
   statusline.setup {
@@ -957,6 +1024,149 @@ do
   vim.keymap.set('n', '<leader>ss', builtin.builtin, { desc = '[S]earch [S]elect Telescope' })
   vim.keymap.set({ 'n', 'v' }, '<leader>sw', builtin.grep_string, { desc = '[S]earch current [W]ord' })
   vim.keymap.set('n', '<leader>sg', builtin.live_grep, { desc = '[S]earch by [G]rep' })
+  for group, fg in pairs {
+    TelescopeGitModified = '#d79921',
+    TelescopeGitCreated = '#b8bb26',
+    TelescopeGitDeleted = '#fb4934',
+    TelescopeGitAdded = '#b8bb26',
+    TelescopeGitRemoved = '#fb4934',
+  } do
+    vim.api.nvim_set_hl(0, group, { fg = fg, bold = true })
+  end
+  -- Keep the selected row's background without masking the status colours.
+  vim.api.nvim_set_hl(0, 'TelescopeSelection', { bg = '#3d4f35' })
+
+  vim.keymap.set('n', '<leader>g', function()
+    local cwd = vim.fs.root(0, { '.git' }) or vim.fn.getcwd()
+    local picker_opts = {
+      cwd = cwd,
+      layout_strategy = 'vertical',
+      layout_config = {
+        prompt_position = 'top',
+        mirror = true,
+        width = 0.9,
+        height = 0.8,
+        preview_height = 0.4,
+      },
+    }
+
+    -- Keep the status compact while retaining the aggregate diff and preview.
+    vim.system({ 'git', 'diff', '--numstat', 'HEAD', '--', '.' }, { cwd = cwd, text = true }, function(result)
+      local diff_stats = {}
+      if result.code == 0 then
+        for line in result.stdout:gmatch '[^\r\n]+' do
+          local added, removed, path = line:match '^(%S+)\t(%S+)\t(.+)$'
+          if path then diff_stats[path] = { added = added, removed = removed } end
+        end
+      end
+
+      vim.schedule(function()
+        local make_entry = require 'telescope.make_entry'
+        local entry_display = require 'telescope.pickers.entry_display'
+        local utils = require 'telescope.utils'
+        local default_entry_maker = make_entry.gen_from_git_status(picker_opts)
+        local displayer = entry_display.create {
+          separator = ' ',
+          items = {
+            { width = 1 },
+            { width = 14 },
+            { remaining = true },
+          },
+        }
+        local status_chars = {
+          A = 'C',
+          C = 'C',
+          D = 'D',
+          M = 'M',
+          R = 'M',
+          U = 'M',
+          ['?'] = 'C',
+        }
+        local status_highlights = {
+          M = 'TelescopeGitModified',
+          C = 'TelescopeGitCreated',
+          D = 'TelescopeGitDeleted',
+        }
+
+        picker_opts.entry_maker = function(raw_entry)
+          local entry = default_entry_maker(raw_entry)
+          if not entry then return nil end
+
+          local x = entry.status:sub(1, 1)
+          local y = entry.status:sub(-1)
+          local primary = x ~= ' ' and x or y
+          local status = status_chars[primary] or 'M'
+          local stat = diff_stats[entry.value]
+          local delta = ''
+          local delta_hl
+          if stat then
+            if stat.added == '-' or stat.removed == '-' then
+              delta = 'binary'
+            else
+              delta = '+' .. stat.added .. ' -' .. stat.removed
+              delta_hl = function()
+                local separator = delta:find ' '
+                return {
+                  { { 0, separator - 1 }, 'TelescopeGitAdded' },
+                  { { separator, #delta }, 'TelescopeGitRemoved' },
+                }
+              end
+            end
+          end
+          local display_path, path_style = utils.transform_path(picker_opts, entry.path)
+
+          entry.display = function()
+            return displayer {
+              { status, status_highlights[status] },
+              { delta, delta_hl },
+              { display_path, function() return path_style end },
+            }
+          end
+          return entry
+        end
+
+        -- Telescope's stock Git preview always shells out to `git diff`.
+        -- Replace it just while this picker is being built so its preview
+        -- uses difftastic when available. A terminal preview is used so
+        -- Difftastic's ANSI colours are rendered instead of shown as text.
+        local telescope_previewers = require 'telescope.previewers'
+        local original_git_file_diff = telescope_previewers.git_file_diff
+        local difftastic_available = vim.fn.executable 'difft' == 1
+        telescope_previewers.git_file_diff = {
+          new = function(opts)
+            return telescope_previewers.new_termopen_previewer {
+              title = difftastic_available and 'Git File Diff (difftastic)' or 'Git File Diff',
+              env = difftastic_available and {
+                DFT_COLOR = 'always',
+                DFT_DISPLAY = 'side-by-side',
+                DFT_BACKGROUND = 'dark',
+              } or nil,
+              get_command = function(entry)
+                if entry.status == '??' then
+                  if not difftastic_available then return { 'cat', '--', entry.path } end
+                  return { 'difft', '--display=side-by-side', '--color=always', '/dev/null', entry.path }
+                end
+
+                local command = { 'git', '--no-pager' }
+                if difftastic_available then
+                  vim.list_extend(command, { '-c', 'diff.external=difft' })
+                else
+                  vim.list_extend(command, { '-c', 'color.ui=always' })
+                end
+                vim.list_extend(command, { 'diff', '--color=always', 'HEAD', '--', entry.value })
+                return command
+              end,
+              cwd = opts.cwd,
+            }
+          end,
+        }
+
+        local ok, err = pcall(builtin.git_status, picker_opts)
+        telescope_previewers.git_file_diff = original_git_file_diff
+        if not ok then error(err) end
+      end)
+    end)
+  end, { desc = '[G]it status' })
   vim.keymap.set('n', '<leader>sd', builtin.diagnostics, { desc = '[S]earch [D]iagnostics' })
   vim.keymap.set('n', '<leader>sr', builtin.resume, { desc = '[S]earch [R]esume' })
   vim.keymap.set('n', '<leader>s.', builtin.oldfiles, { desc = '[S]earch Recent Files ("." for repeat)' })
@@ -1023,6 +1233,25 @@ do
 
   -- Shortcut for searching your Neovim configuration files
   vim.keymap.set('n', '<leader>sn', function() builtin.find_files { cwd = vim.fn.stdpath 'config', follow = true } end, { desc = '[S]earch [N]eovim files' })
+end
+
+-- Find the nearest project configuration above a buffer. Formatting and
+-- linting use these helpers to opt into project tooling rather than imposing a
+-- global formatter on every file of a given language.
+local function project_file(bufnr, names)
+  local filename = vim.api.nvim_buf_get_name(bufnr)
+  local start = filename ~= '' and vim.fs.dirname(filename) or vim.uv.cwd()
+  return vim.fs.find(names, { path = start, upward = true, type = 'file' })[1]
+end
+
+local function project_file_contains(bufnr, name, pattern)
+  local path = project_file(bufnr, { name })
+  if not path then return false end
+  local file = io.open(path, 'r')
+  if not file then return false end
+  local content = file:read '*a'
+  file:close()
+  return content:find(pattern) ~= nil
 end
 
 -- ============================================================
@@ -1134,11 +1363,63 @@ do
   -- Enable the following language servers
   --  Feel free to add/remove any LSPs that you want here. They will automatically be installed.
   --  See `:help lsp-config` for information about keys and how to configure
+  local function project_lsp_command(command, args)
+    return function(dispatchers, config)
+      local executable = command
+      if config.root_dir then
+        local project_executable = vim.fs.joinpath(config.root_dir, '.venv', 'bin', command)
+        if vim.fn.executable(project_executable) == 1 then executable = project_executable end
+      end
+      return vim.lsp.rpc.start(vim.list_extend({ executable }, args), dispatchers)
+    end
+  end
+
+  local function project_node_lsp_command(command, args)
+    return function(dispatchers, config)
+      local executable = command
+      if config.root_dir then
+        local node_modules = vim.fs.find('node_modules', {
+          path = config.root_dir,
+          upward = true,
+          type = 'directory',
+          limit = math.huge,
+        })
+        for _, directory in ipairs(node_modules) do
+          local project_executable = vim.fs.joinpath(directory, '.bin', command)
+          if vim.fn.executable(project_executable) == 1 then
+            executable = project_executable
+            break
+          end
+        end
+      end
+      return vim.lsp.rpc.start(vim.list_extend({ executable }, args), dispatchers)
+    end
+  end
+
+  -- These servers are executables owned by each Python project. Keep them out
+  -- of Mason's installation list and prefer the nearest .venv version.
+  ---@type table<string, vim.lsp.Config>
+  local project_servers = {
+    ty = { cmd = project_lsp_command('ty', { 'server' }) },
+    ruff = {
+      cmd = project_lsp_command('ruff', { 'server' }),
+      -- Let ty own Python hover/type information while Ruff provides linting,
+      -- code actions, and formatting without duplicate hover responses.
+      on_attach = function(client) client.server_capabilities.hoverProvider = false end,
+      root_dir = function(bufnr, on_dir)
+        local config = project_file(bufnr, { 'ruff.toml', '.ruff.toml' })
+        if not config and project_file_contains(bufnr, 'pyproject.toml', '%[tool%.ruff') then
+          config = project_file(bufnr, { 'pyproject.toml' })
+        end
+        if config then on_dir(vim.fs.dirname(config)) end
+      end,
+    },
+  }
+
   ---@type table<string, vim.lsp.Config>
   local servers = {
     -- clangd = {},
     -- gopls = {},
-    pyright = {},
     rust_analyzer = {},
     taplo = {}, -- TOML language server
     html = {
@@ -1222,7 +1503,10 @@ do
   -- You can press `g?` for help in this menu.
   local ensure_installed = vim.tbl_keys(servers or {})
   vim.list_extend(ensure_installed, {
-    -- You can add other tools here that you want Mason to install
+    -- Protocol/fix adapters load each project's own ESLint installation; the
+    -- actual linter version remains project-owned.
+    'eslint-lsp',
+    'eslint_d',
   })
 
   require('mason-tool-installer').setup { ensure_installed = ensure_installed }
@@ -1231,10 +1515,22 @@ do
     vim.lsp.config(name, server)
     vim.lsp.enable(name)
   end
+  for name, server in pairs(project_servers) do
+    vim.lsp.config(name, server)
+    vim.lsp.enable(name)
+  end
 
-  -- TypeScript 7's native Go-based language server.
+  -- Project-configured web linters attach only when their own config exists.
+  vim.lsp.config('biome', { cmd = project_node_lsp_command('biome', { 'lsp-proxy' }) })
+  vim.lsp.config('oxlint', { cmd = project_node_lsp_command('oxlint', { '--lsp' }) })
+  vim.lsp.enable('biome')
+  vim.lsp.enable('eslint')
+  vim.lsp.enable('oxlint')
+
+  -- TypeScript 7's native Go-based language server. Prefer the repository's
+  -- TypeScript version (including monorepo-root node_modules) over PATH.
   vim.lsp.config('tsgo', {
-    cmd = { 'tsc', '--lsp', '--stdio' },
+    cmd = project_node_lsp_command('tsc', { '--lsp', '--stdio' }),
     filetypes = { 'javascript', 'javascriptreact', 'typescript', 'typescriptreact' },
     root_markers = { 'tsconfig.json', 'jsconfig.json', 'package.json', '.git' },
   })
@@ -1248,35 +1544,137 @@ end
 do
   -- [[ Formatting ]]
   vim.pack.add { gh 'stevearc/conform.nvim' }
+  local conform_util = require 'conform.util'
+  local function python_command(command) return conform_util.find_executable({ '.venv/bin/' .. command }, command) end
+
+  local function python_formatters(bufnr)
+    if project_file(bufnr, { 'ruff.toml', '.ruff.toml' }) or project_file_contains(bufnr, 'pyproject.toml', '%[tool%.ruff') then
+      return { 'ruff_fix', 'ruff_format' }
+    end
+
+    local formatters = {}
+    if project_file_contains(bufnr, 'pyproject.toml', '%[tool%.isort%]') then table.insert(formatters, 'isort') end
+    if project_file_contains(bufnr, 'pyproject.toml', '%[tool%.black%]') then table.insert(formatters, 'black') end
+    return formatters
+  end
+
+  local eslint_configs = {
+    '.eslintrc',
+    '.eslintrc.js',
+    '.eslintrc.cjs',
+    '.eslintrc.json',
+    '.eslintrc.yaml',
+    '.eslintrc.yml',
+    'eslint.config.js',
+    'eslint.config.cjs',
+    'eslint.config.mjs',
+    'eslint.config.ts',
+    'eslint.config.cts',
+    'eslint.config.mts',
+  }
+  local prettier_configs = {
+    '.prettierrc',
+    '.prettierrc.js',
+    '.prettierrc.cjs',
+    '.prettierrc.json',
+    '.prettierrc.json5',
+    '.prettierrc.mjs',
+    '.prettierrc.toml',
+    '.prettierrc.yaml',
+    '.prettierrc.yml',
+    'prettier.config.js',
+    'prettier.config.cjs',
+    'prettier.config.mjs',
+  }
+  local biome_configs = { 'biome.json', 'biome.jsonc', '.biome.json', '.biome.jsonc' }
+  local oxfmt_configs = { '.oxfmtrc.json', '.oxfmtrc.jsonc', 'oxfmt.config.ts' }
+  local oxlint_configs = { '.oxlintrc.json', '.oxlintrc.jsonc', 'oxlint.config.ts' }
+
+  local function uses_prettier(bufnr)
+    return project_file(bufnr, prettier_configs) or project_file_contains(bufnr, 'package.json', '"prettier"')
+  end
+
+  local function web_code_formatters(bufnr)
+    local uses_oxfmt = project_file(bufnr, oxfmt_configs)
+    local uses_oxlint = project_file(bufnr, oxlint_configs)
+    if uses_oxfmt or uses_oxlint then
+      local formatters = {}
+      if uses_oxlint then table.insert(formatters, 'oxlint') end
+      if uses_oxfmt then table.insert(formatters, 'oxfmt') end
+      return formatters
+    end
+    if project_file(bufnr, biome_configs) then return { 'biome-check' } end
+
+    local formatters = {}
+    if project_file(bufnr, eslint_configs) or project_file_contains(bufnr, 'package.json', '"eslintConfig"') then
+      table.insert(formatters, 'eslint_d')
+    end
+    if uses_prettier(bufnr) then table.insert(formatters, 'prettier') end
+    return formatters
+  end
+
+  local function web_document_formatters(bufnr)
+    if project_file(bufnr, oxfmt_configs) then return { 'oxfmt' } end
+    if project_file(bufnr, biome_configs) then return { 'biome-check' } end
+    return uses_prettier(bufnr) and { 'prettier' } or {}
+  end
+
+  local function configured(bufnr, markers, formatter)
+    return project_file(bufnr, markers) and { formatter } or {}
+  end
+
   require('conform').setup {
-    notify_on_error = false,
-    format_on_save = function(bufnr)
-      -- You can specify filetypes to autoformat on save here:
-      local enabled_filetypes = {
-        -- lua = true,
-        -- python = true,
-      }
-      if enabled_filetypes[vim.bo[bufnr].filetype] then
-        return { timeout_ms = 500 }
-      else
-        return nil
-      end
+    notify_on_error = true,
+    notify_no_formatters = false,
+    -- Format asynchronously after every ordinary file write. Explicit project
+    -- formatters win; an attached LSP is the fallback. The formatted buffer is
+    -- written back by conform once formatting completes.
+    format_after_save = function(bufnr)
+      if vim.bo[bufnr].buftype ~= '' or not vim.bo[bufnr].modifiable then return nil end
+      return { timeout_ms = 3000, lsp_format = 'fallback' }
     end,
     default_format_opts = {
-      lsp_format = 'fallback', -- Use external formatters if configured below, otherwise use LSP formatting. Set to `false` to disable LSP formatting entirely.
+      lsp_format = 'fallback',
+      timeout_ms = 3000,
     },
-    -- You can also specify external formatters in here.
+    formatters = {
+      -- Prefer the tool version locked by uv/pip in the nearest project, with
+      -- Mason/PATH as a fallback for projects that configure it externally.
+      ruff_fix = { command = python_command 'ruff' },
+      ruff_format = { command = python_command 'ruff' },
+      isort = { command = python_command 'isort' },
+      black = { command = python_command 'black' },
+    },
     formatters_by_ft = {
-      -- rust = { 'rustfmt' },
-      -- Conform can also run multiple formatters sequentially
-      -- python = { "isort", "black" },
-      --
-      -- You can use 'stop_after_first' to run the first available formatter from the list
-      -- javascript = { "prettierd", "prettier", stop_after_first = true },
+      python = python_formatters,
+      javascript = web_code_formatters,
+      javascriptreact = web_code_formatters,
+      typescript = web_code_formatters,
+      typescriptreact = web_code_formatters,
+      json = web_document_formatters,
+      jsonc = web_document_formatters,
+      css = web_document_formatters,
+      scss = web_document_formatters,
+      less = web_document_formatters,
+      html = web_document_formatters,
+      markdown = web_document_formatters,
+      yaml = web_document_formatters,
+      lua = function(bufnr) return configured(bufnr, { '.stylua.toml', 'stylua.toml' }, 'stylua') end,
+      rust = function(bufnr) return configured(bufnr, { 'Cargo.toml' }, 'rustfmt') end,
+      c = function(bufnr) return configured(bufnr, { '.clang-format', '_clang-format' }, 'clang_format') end,
+      cpp = function(bufnr) return configured(bufnr, { '.clang-format', '_clang-format' }, 'clang_format') end,
+      cs = function(bufnr) return configured(bufnr, { '.csharpierrc', 'dotnet-tools.json' }, 'csharpier') end,
+      php = function(bufnr)
+        return configured(bufnr, { '.php-cs-fixer.php', '.php-cs-fixer.dist.php' }, 'php_cs_fixer')
+      end,
+      sh = function(bufnr) return configured(bufnr, { '.editorconfig', '.shfmt' }, 'shfmt') end,
+      toml = function(bufnr) return configured(bufnr, { 'taplo.toml', '.taplo.toml' }, 'taplo') end,
     },
   }
 
-  vim.keymap.set({ 'n', 'v' }, '<leader>F', function() require('conform').format { async = true } end, { desc = '[F]ormat buffer' })
+  vim.keymap.set({ 'n', 'v' }, '<leader>F', function()
+    require('conform').format { async = true, lsp_format = 'fallback' }
+  end, { desc = '[F]ix and format buffer' })
 end
 
 -- ============================================================

@@ -8,7 +8,6 @@ keyboard-driven file tree.
 The main configuration is [`init.lua`](init.lua). The other custom files are:
 
 - [`after/queries/typescript/injections.scm`](after/queries/typescript/injections.scm) — Tree-sitter injections for Lit `css` and `html` tagged templates.
-- [`lazygit.yml`](lazygit.yml) — LazyGit key behaviour.
 - [`nvim-pack-lock.json`](nvim-pack-lock.json) — tracked plugin revisions for reproducible installs.
 
 ## Installation
@@ -20,9 +19,9 @@ Kickstart requirements apply:
 
 - `git`, `make`, `unzip`, and a C compiler
 - `ripgrep`, `fd`, and the Tree-sitter CLI
+- `difftastic` (`difft`), for structural Git previews in `<leader>g`
 - An OS clipboard provider
 - A selected [Nerd Font](https://www.nerdfonts.com/) (this configuration enables Nerd Font icons)
-- `lazygit`, for `<leader>g`
 - `npm`/TypeScript with a `tsc` executable, for the native TypeScript LSP
 
 Mason installs the configured language servers into Neovim's data directory.
@@ -123,7 +122,7 @@ Other Telescope mappings include `<leader>sh` (help), `<leader>sk` (keymaps),
 
 | Mapping | Action |
 | --- | --- |
-| `<leader>g` | Open LazyGit |
+| `<leader>g` | Open the Telescope Git status overlay; Enter opens the selected file |
 | `<leader>d` | Toggle character-level inline diff highlighting |
 | `gc` / `gC` | Next / previous Git hunk |
 | `<leader>o` | Toggle the code outline (also useful while reviewing code) |
@@ -133,9 +132,9 @@ Git changes are shown with custom line signs and explicit Gruvbox diff colours.
 hunks. `Diffview` is configured for side-by-side review, without icons, and can
 be opened with its normal commands such as `:DiffviewOpen`.
 
-LazyGit is opened in a 90%-sized Neovim float. Its repository configuration
-has automatic fetching disabled; `q` and `<Esc>` quit, while Return is
-intentionally disabled (`lazygit.yml`).
+The Git status overlay is provided by Telescope. It shows staged/worktree status,
+added and removed line counts, and a difftastic structural diff preview when
+`difft` is installed; Enter opens the selected file.
 
 ## Diagnostics and hover documentation
 
@@ -162,8 +161,7 @@ The important workflow changes are:
   `<leader>fb`, and formatting uses uppercase `<leader>F`.
 - Blink completion uses the `enter` preset rather than the default preset.
 - Built-in virtual diagnostic text is replaced by wrapped inline diagnostics.
-- LazyGit is the active Git UI. Neogit is no longer configured (an older
-  Neogit entry may remain in the pack lock until it is pruned).
+- Telescope's Git status picker is the active Git UI.
 
 In addition to Kickstart's plugins, this configuration adds or uses:
 
@@ -179,7 +177,6 @@ In addition to Kickstart's plugins, this configuration adds or uses:
   global split mappings continue to work.
 - **dropbar.nvim** for symbol breadcrumbs in the winbar.
 - **diffview.nvim** for side-by-side diffs and file history.
-- **lazygit.nvim** for the primary Git UI.
 - **tiny-inline-diagnostic.nvim** for wrapped inline diagnostics.
 - **nvim-treesitter-context** to keep up to three lines of function/class
   context visible while scrolling.
@@ -191,8 +188,7 @@ Nerd Font is used in the statusline, Telescope, and plugin UIs.
 The statusline is replaced with a compact custom layout containing:
 
 - current mode
-- Git branch
-- added and removed lines in the current buffer
+- added and removed lines across tracked changes and untracked files
 - the number of changed files in the repository, refreshed asynchronously
 - the current filetype and its icon
 
@@ -200,9 +196,14 @@ It deliberately omits the default cursor line/column display.
 
 ## LSP, completion, and formatting
 
-Mason is asked to install these servers/tools:
+Mason installs language-server infrastructure and adapters, but project-owned
+tools are deliberately resolved from `.venv/bin` or `node_modules/.bin` first:
 
-- Python: `pyright`
+- Python type checking and navigation: project `ty`
+- Python linting and code actions: project `ruff`
+- TypeScript navigation: project `tsc --lsp`
+- Configured web-project linting: project Oxlint or Biome; project ESLint via
+  the Mason-managed `eslint-lsp`/`eslint_d` adapters
 - Rust: `rust_analyzer`
 - TOML: `taplo`
 - HTML and Django templates: `html`
@@ -212,20 +213,29 @@ Mason is asked to install these servers/tools:
 - Lua formatting: `stylua`
 - Lua: `lua_ls`
 
+Ty and Ruff both discover project `pyproject.toml` files and `.venv`
+environments. Their LSPs prefer project-local `.venv/bin` executables and fall
+back to Mason. Ruff hover is disabled so ty exclusively owns Python hover and
+type information, avoiding duplicate LSP responses.
+
+Formatting and safe lint autofixes run synchronously before every normal file
+save. Conform chooses tools from project markers rather than imposing one global
+formatter and prefers executables from project `.venv` or `node_modules`
+directories: Ruff or Black/isort for Python; Oxlint/Oxfmt, Biome, or
+ESLint/Prettier for web projects; and configured Stylua, rustfmt, clang-format, CSharpier,
+PHP-CS-Fixer, shfmt, or Taplo projects. The attached language server is the
+fallback when no explicit project formatter is selected. `<leader>F` runs the
+same fix-and-format pipeline manually.
+
 The HTML server is enabled for both `html` and `htmldjango`, with embedded CSS
-and JavaScript support. Lua LSP formatting is disabled so Stylua is used
-instead. Conform does not format on save by default: the whitelist is empty;
-`<leader>F` is the manual formatting escape hatch and uses LSP formatting as a
-fallback.
+and JavaScript support. Lua LSP formatting is disabled so project-configured
+Stylua is used instead.
 
-JavaScript and TypeScript use Neovim's `tsgo` configuration:
-
-```text
-cmd = { "tsc", "--lsp", "--stdio" }
-```
-
-It is enabled for JavaScript/TypeScript and their React variants, and expects
-`tsc` to be available on `PATH`.
+JavaScript and TypeScript use Neovim's `tsgo` configuration. It searches upward
+for the monorepo's `node_modules/.bin/tsc` and starts that exact project version
+with `--lsp --stdio`, falling back to `PATH` only when no local TypeScript exists.
+Oxlint uses the same project-local resolution and Oxfmt is selected whenever an
+Oxfmt configuration is present.
 
 Completion uses `blink.cmp` with the `enter` preset, LSP/path/snippet sources,
 LuaSnip snippets, hidden automatic documentation, Lua fuzzy matching, and
