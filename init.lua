@@ -301,7 +301,7 @@ do
     local file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':.')
     if file == '' then file = '[No Name]' end
 
-    local reference = end_line and string.format('%s:%d-%d', file, start_line, end_line)
+    local reference = end_line and end_line ~= start_line and string.format('%s:%d-%d', file, start_line, end_line)
       or string.format('%s:%d', file, start_line)
     vim.fn.setreg('+', reference)
   end
