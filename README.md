@@ -83,6 +83,7 @@ The most-used mappings are below. `<leader>` means `,`.
 | `<leader>o` | Toggle the Aerial code outline (opens focused; selecting a symbol closes it) |
 | `<C-h/j/k/l>` | Move to the left/down/up/right split |
 | `H/J/K/L` | Faster split navigation in the same directions |
+| `j/k` | Move by display line (`gj/gk`) |
 | `<Esc>` in normal mode | Clear search highlighting |
 | `<Esc><Esc>` in terminal mode | Leave terminal mode |
 
@@ -222,7 +223,7 @@ Formatting and safe lint autofixes run synchronously before every normal file
 save. Conform chooses tools from project markers rather than imposing one global
 formatter and prefers executables from project `.venv` or `node_modules`
 directories: Ruff or Black/isort for Python; Oxlint/Oxfmt, Biome, or
-ESLint/Prettier for web projects; and configured Stylua, rustfmt, clang-format, CSharpier,
+ESLint/Prettier for web projects (including MDX); and configured Stylua, rustfmt, clang-format, CSharpier,
 PHP-CS-Fixer, shfmt, or Taplo projects. The attached language server is the
 fallback when no explicit project formatter is selected. `<leader>F` runs the
 same fix-and-format pipeline manually.
@@ -244,9 +245,12 @@ signature help.
 ## Web templates and Tree-sitter
 
 The configuration installs parsers for Bash, C, CSS, diff, HTML, JavaScript,
-Lua/Luadoc, Markdown, queries, Rust, TOML, Vimscript, and Vim help. Parsers
+Lua/Luadoc, Markdown, queries, Rust, TOML, Vimscript, YAML, and Vim help. Parsers
 are attached automatically and installed on demand when a supported filetype
-is opened.
+is opened. `.mdx` files use the MDX language server, while `mdx.nvim` combines
+Markdown with TypeScript/TSX Tree-sitter injections for imports and JSX. MDX
+files must be included by the project's `tsconfig.json` for component JSDoc,
+types, and source definitions to resolve correctly.
 
 - Django templates keep the `htmldjango` filetype while using the HTML parser.
 - TypeScript/JavaScript buffers extract embedded CSS and HTML through Otter.

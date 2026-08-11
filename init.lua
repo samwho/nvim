@@ -293,6 +293,10 @@ do
   --  See `:help hlsearch`
   vim.keymap.set('n', '<Esc>', '<cmd>nohlsearch<CR>')
 
+  -- Move by screen line so wrapped prose does not skip over visible lines.
+  vim.keymap.set({ 'n', 'x' }, 'j', 'gj', { desc = 'Move down by display line' })
+  vim.keymap.set({ 'n', 'x' }, 'k', 'gk', { desc = 'Move up by display line' })
+
   -- Copy a visual selection as a file and line-range reference for Pi.
   vim.keymap.set('x', '<leader>y', function()
     -- In a visual-mode mapping, the `<`/`>` marks may not have been updated
@@ -1396,6 +1400,45 @@ do
     end
   end
 
+  -- MDX analyzer's TypeScript integration still requires tsserverlibrary.js,
+  -- which TypeScript 7 no longer ships. Prefer the nearest compatible project
+  -- SDK, including versions stored by pnpm.
+  local function typescript_sdk_path(root_dir)
+    local directory = root_dir or vim.uv.cwd()
+    while directory do
+      local candidates = { vim.fs.joinpath(directory, 'node_modules', 'typescript', 'lib') }
+      local pnpm_directory = vim.fs.joinpath(directory, 'node_modules', '.pnpm')
+      if vim.uv.fs_stat(pnpm_directory) then
+        local pnpm_typescript = {}
+        for name, kind in vim.fs.dir(pnpm_directory) do
+          if kind == 'directory' and name:match '^typescript@' then table.insert(pnpm_typescript, name) end
+        end
+        table.sort(pnpm_typescript, function(left, right) return left > right end)
+        for _, name in ipairs(pnpm_typescript) do
+          table.insert(candidates, vim.fs.joinpath(pnpm_directory, name, 'node_modules', 'typescript', 'lib'))
+        end
+      end
+
+      for _, candidate in ipairs(candidates) do
+        if vim.uv.fs_stat(vim.fs.joinpath(candidate, 'tsserverlibrary.js')) then return candidate end
+      end
+
+      local parent = vim.fs.dirname(directory)
+      if parent == directory then break end
+      directory = parent
+    end
+  end
+
+  -- The current Mason mdx-analyzer release has one stale default import from
+  -- vscode-uri. Load a tiny Node hook that rewrites that generated import so
+  -- the server can start without modifying Mason's managed files.
+  local mdx_language_server_loader = vim.fs.joinpath(vim.fn.stdpath 'config', 'scripts', 'mdx-language-server-loader.mjs')
+  local function mdx_language_server_command(dispatchers)
+    local executable = vim.fn.exepath 'mdx-language-server'
+    if executable == '' then executable = 'mdx-language-server' else executable = vim.fn.resolve(executable) end
+    return vim.lsp.rpc.start({ 'node', '--experimental-loader=' .. mdx_language_server_loader, executable, '--stdio' }, dispatchers)
+  end
+
   -- These servers are executables owned by each Python project. Keep them out
   -- of Mason's installation list and prefer the nearest .venv version.
   ---@type table<string, vim.lsp.Config>
@@ -1436,6 +1479,17 @@ do
       },
     },
     cssls = {},
+    mdx_analyzer = {
+      cmd = mdx_language_server_command,
+      before_init = function(_, config)
+        local sdk = typescript_sdk_path(config.root_dir)
+        if not sdk then return end
+        config.init_options = config.init_options or {}
+        config.init_options.typescript = config.init_options.typescript or {}
+        config.init_options.typescript.enabled = true
+        config.init_options.typescript.tsdk = sdk
+      end,
+    },
     omnisharp = {}, -- C#
     intelephense = {}, -- PHP
     --
@@ -1658,6 +1712,7 @@ do
       less = web_document_formatters,
       html = web_document_formatters,
       markdown = web_document_formatters,
+      mdx = web_document_formatters,
       yaml = web_document_formatters,
       lua = function(bufnr) return configured(bufnr, { '.stylua.toml', 'stylua.toml' }, 'stylua') end,
       rust = function(bufnr) return configured(bufnr, { 'Cargo.toml' }, 'rustfmt') end,
@@ -1777,7 +1832,7 @@ do
   require('treesitter-context').setup { max_lines = 3 }
 
   -- Ensure basic parsers are installed
-  local parsers = { 'bash', 'c', 'css', 'diff', 'html', 'javascript', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'rust', 'toml', 'vim', 'vimdoc' }
+  local parsers = { 'bash', 'c', 'css', 'diff', 'html', 'javascript', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'rust', 'toml', 'vim', 'vimdoc', 'yaml' }
   require('nvim-treesitter').install(parsers)
 
   ---@param buf integer
@@ -1805,10 +1860,28 @@ do
   -- parser for the HTML portions while preserving the `htmldjango` filetype.
   vim.treesitter.language.register('html', 'htmldjango')
 
+  -- MDX has no dedicated Tree-sitter parser. mdx.nvim injects TypeScript/TSX
+  -- into imports, exports, and JSX while retaining Markdown for prose/fences.
+  vim.pack.add { gh 'davidmh/mdx.nvim' }
+
+  -- markdown_inline interprets some JavaScript module paths as GFM deletion.
+  -- Remove that text attribute in MDX windows without masking TSX colours.
+  local mdx_highlight_namespace = vim.api.nvim_create_namespace('mdx-highlights')
+  vim.api.nvim_set_hl(mdx_highlight_namespace, '@markup.strikethrough', { strikethrough = false })
+  local function set_mdx_highlight_namespace(buf)
+    local namespace = vim.bo[buf].filetype == 'mdx' and mdx_highlight_namespace or 0
+    for _, win in ipairs(vim.fn.win_findbuf(buf)) do vim.api.nvim_win_set_hl_ns(win, namespace) end
+  end
+  vim.api.nvim_create_autocmd({ 'BufEnter', 'WinEnter' }, {
+    group = vim.api.nvim_create_augroup('mdx-highlights', { clear = true }),
+    callback = function(args) set_mdx_highlight_namespace(args.buf) end,
+  })
+
   local available_parsers = require('nvim-treesitter').get_available()
   vim.api.nvim_create_autocmd('FileType', {
     callback = function(args)
       local buf, filetype = args.buf, args.match
+      set_mdx_highlight_namespace(buf)
 
       local language = vim.treesitter.language.get_lang(filetype)
       if not language then return end
