@@ -365,6 +365,8 @@ do
   -- `gh` is Select mode by default. Make the hover mapping global so it also
   -- works before LspAttach fires (and does not unexpectedly enter Select mode).
   vim.keymap.set('n', 'gh', show_hover_or_diagnostic, { desc = 'Show hover or diagnostic' })
+      vim.keymap.set('n', 'gp', function() vim.diagnostic.jump { count = 1 } end, { desc = 'Go to next diagnostic' })
+      vim.keymap.set('n', 'gP', function() vim.diagnostic.jump { count = -1 } end, { desc = 'Go to previous diagnostic' })
 
   vim.keymap.set('n', 'gl', function()
     vim.diagnostic.open_float {
@@ -1429,8 +1431,8 @@ do
       --  For example, in C this would take you to the header.
       map('grD', vim.lsp.buf.declaration, '[G]oto [D]eclaration')
       map('gd', vim.lsp.buf.definition, '[G]oto [D]efinition')
-      map('gp', function() vim.diagnostic.jump { count = 1 } end, '[G]oto next diagnostic')
-      map('gP', function() vim.diagnostic.jump { count = -1 } end, '[G]oto previous diagnostic')
+
+
 
       -- The following two autocommands are used to highlight references of the
       -- word under your cursor when your cursor rests there for a little while.
@@ -2055,7 +2057,7 @@ do
   -- NOTE: You can add your own plugins, configuration, etc from `lua/custom/plugins/*.lua`
   --
   --  Uncomment the following line and add your plugins to `lua/custom/plugins/*.lua` to get going.
-  -- require 'custom.plugins'
+  require 'custom.plugins'
 end
 
 -- The line beneath this is called `modeline`. See `:help modeline`

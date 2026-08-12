@@ -126,7 +126,8 @@ Other Telescope mappings include `<leader>sh` (help), `<leader>sk` (keymaps),
 | Mapping | Action |
 | --- | --- |
 | `<leader>g` | Open the Telescope Git status overlay; Enter opens the selected file |
-| `<leader>d` | Toggle character-level inline diff highlighting |
+| `<leader>d` | Show spelling suggestions in Markdown/MDX; otherwise toggle inline diff highlighting |
+| `<leader>D` | Add the spelling diagnostic under the cursor to the dictionary |
 | `gc` / `gC` | Next / previous Git hunk |
 | `<leader>o` | Toggle the code outline (also useful while reviewing code) |
 
