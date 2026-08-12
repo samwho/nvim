@@ -124,7 +124,11 @@ do
   --  See `:help 'clipboard'`
   vim.schedule(function() vim.o.clipboard = 'unnamedplus' end)
 
-  -- Enable break indent
+  -- Wrap at sensible break points instead of letting long lines run under
+  -- satellite's right-edge scrollbar. This only changes how lines are shown;
+  -- it does not insert line breaks into files.
+  vim.o.wrap = true
+  vim.o.linebreak = true
   vim.o.breakindent = true
 
   -- Enable undo/redo changes even after closing and reopening a file
@@ -614,7 +618,18 @@ do
 
   -- Decorated scrollbar with diagnostics, search, Git hunks, and marks.
   vim.pack.add { gh 'lewis6991/satellite.nvim' }
-  require('satellite').setup {}
+  -- Keep decorations inside the one-column bar. Satellite's default sign
+  -- rendering adds a second overlay column, which can obscure wrapped text.
+  require('satellite').setup {
+    handlers = {
+      cursor = { overlap = true },
+      search = { overlap = true },
+      diagnostic = { overlap = true },
+      gitsigns = { overlap = true },
+      marks = { overlap = true },
+      quickfix = { overlap = true },
+    },
+  }
 
   -- Code outline for classes, methods, functions, and other symbols.
   -- Aerial uses Tree-sitter when available and falls back to LSP symbols.

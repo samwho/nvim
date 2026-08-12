@@ -165,12 +165,25 @@ local prose_filetypes = {
   mdx = true,
 }
 
+-- Vale requires a project .vale.ini. Do not invoke it in unrelated prose
+-- buffers, where it exits with a configuration error.
+local function has_vale_config(bufnr)
+  local filename = vim.api.nvim_buf_get_name(bufnr)
+  return filename ~= '' and #vim.fs.find('.vale.ini', { path = filename, upward = true }) > 0
+end
+
 local writing_group = vim.api.nvim_create_augroup('writing', { clear = true })
 
 vim.api.nvim_create_autocmd('FileType', {
   group = writing_group,
   pattern = { 'markdown', 'mdx' },
   callback = function(args)
+    -- Display prose at word boundaries so it stays readable beside the
+    -- right-edge scrollbar. These are visual-only wraps; the buffer is unchanged.
+    vim.opt_local.wrap = true
+    vim.opt_local.linebreak = true
+    vim.opt_local.breakindent = true
+
     -- MDX's Tree-sitter injections make Vim's native scanner see JSX identifiers
     -- as prose, so MDX relies on the filtered diagnostic scanner instead.
     vim.opt_local.spell = vim.bo[args.buf].filetype ~= 'mdx'
@@ -189,6 +202,6 @@ vim.api.nvim_create_autocmd({ 'BufEnter', 'BufWritePost', 'InsertLeave' }, {
   callback = function(args)
     if not prose_filetypes[vim.bo[args.buf].filetype] then return end
     update_spell_diagnostics(args.buf)
-    if vim.fn.executable 'vale' == 1 then lint.try_lint() end
+    if vim.fn.executable 'vale' == 1 and has_vale_config(args.buf) then lint.try_lint() end
   end,
 })
