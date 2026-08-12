@@ -417,7 +417,6 @@ do
   -- Use the literal uppercase keys: terminals normally send <S-l> as `L`.
   vim.keymap.set('n', 'H', function() move_focus 'h' end, { desc = 'Move focus to the left window' })
   vim.keymap.set('n', 'L', function() move_focus 'l' end, { desc = 'Move focus to the right window' })
-  vim.keymap.set('n', 'J', function() move_focus 'j' end, { desc = 'Move focus to the lower window' })
   vim.keymap.set('n', 'K', function() move_focus 'k' end, { desc = 'Move focus to the upper window' })
 
   -- NOTE: Some terminals have colliding keymaps or are not able to send distinct keycodes
