@@ -1068,21 +1068,27 @@ do
   local make_entry = require 'telescope.make_entry'
 
   local function recent_files()
+    local current_dir = vim.fs.normalize(vim.fn.getcwd())
     local current_buffer = vim.api.nvim_get_current_buf()
-    local current_file = vim.api.nvim_buf_get_name(current_buffer)
+    local current_file = vim.fs.normalize(vim.fn.fnamemodify(vim.api.nvim_buf_get_name(current_buffer), ':p'))
     local results = {}
     local seen = {}
 
     local function add_file(file)
-      if file == '' or file == current_file or seen[file] then return end
-      local stat = vim.uv.fs_stat(file)
+      if file == '' then return end
+      local absolute_file = vim.fs.normalize(vim.fn.fnamemodify(file, ':p'))
+      local relative_file = vim.fs.relpath(current_dir, absolute_file)
+      if not relative_file or relative_file == '..' or relative_file:sub(1, 3) == '../' then return end
+      if absolute_file == current_file or seen[absolute_file] then return end
+      local stat = vim.uv.fs_stat(absolute_file)
       if stat and stat.type == 'file' then
-        seen[file] = true
-        results[#results + 1] = file
+        seen[absolute_file] = true
+        results[#results + 1] = absolute_file
       end
     end
 
-    -- Include files opened during this session, followed by ShaDa history.
+    -- Keep the initial MRU list scoped to Neovim's current working directory;
+    -- ShaDa's old-file history is otherwise shared across all projects.
     local buffers = vim.fn.getbufinfo { buflisted = 1 }
     table.sort(buffers, function(a, b) return (a.lastused or 0) > (b.lastused or 0) end)
     for _, buffer in ipairs(buffers) do
