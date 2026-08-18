@@ -1558,6 +1558,25 @@ do
     end
   end
 
+  -- TypeScript 7 ships the native Go LSP (`tsc --lsp`), while TypeScript 6
+  -- and earlier need typescript-language-server. Keep the two clients from
+  -- attaching to the same project and never pass --lsp to an older compiler.
+  local function typescript_major(root_dir)
+    local sdk = typescript_sdk_path(root_dir)
+    if not sdk then return end
+    local package_json = vim.fs.joinpath(vim.fs.dirname(sdk), 'package.json')
+    local ok, package = pcall(vim.json.decode, table.concat(vim.fn.readfile(package_json), '\n'))
+    if not ok or type(package.version) ~= 'string' then return end
+    return tonumber(package.version:match '^(%d+)')
+  end
+
+  local function typescript_lsp_root_dir(supports_version)
+    return function(bufnr, on_dir)
+      local root = vim.fs.root(bufnr, { 'pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lock', 'tsconfig.json', 'jsconfig.json', 'package.json', '.git' })
+      if root and supports_version(typescript_major(root)) then on_dir(root) end
+    end
+  end
+
   -- The current Mason mdx-analyzer release has one stale default import from
   -- vscode-uri. Load a tiny Node hook that rewrites that generated import so
   -- the server can start without modifying Mason's managed files.
@@ -1625,7 +1644,10 @@ do
     -- Some languages (like typescript) have entire language plugins that can be useful:
     --    https://github.com/pmizio/typescript-tools.nvim
     --
-    -- JavaScript and TypeScript use the native TypeScript 7 Go LSP below.
+    -- TypeScript 6 and earlier use the standard Node-based language server.
+    ts_ls = {
+      root_dir = typescript_lsp_root_dir(function(major) return major and major < 7 end),
+    },
 
     stylua = {}, -- Used to format Lua code
 
@@ -1715,7 +1737,7 @@ do
   vim.lsp.config('tsgo', {
     cmd = project_node_lsp_command('tsc', { '--lsp', '--stdio' }),
     filetypes = { 'javascript', 'javascriptreact', 'typescript', 'typescriptreact' },
-    root_markers = { 'tsconfig.json', 'jsconfig.json', 'package.json', '.git' },
+    root_dir = typescript_lsp_root_dir(function(major) return major and major >= 7 end),
   })
   vim.lsp.enable('tsgo')
 end
