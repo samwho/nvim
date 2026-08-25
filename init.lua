@@ -1610,7 +1610,7 @@ do
   ---@type table<string, vim.lsp.Config>
   local servers = {
     -- clangd = {},
-    -- gopls = {},
+    gopls = {},
     rust_analyzer = {},
     taplo = {}, -- TOML language server
     html = {
@@ -1740,6 +1740,47 @@ do
     root_dir = typescript_lsp_root_dir(function(major) return major and major >= 7 end),
   })
   vim.lsp.enable('tsgo')
+
+  local function current_lsp_clients(name)
+    local clients = vim.lsp.get_clients { bufnr = 0 }
+    if not name or name == '' then return clients end
+    return vim.tbl_filter(function(client) return client.name == name end, clients)
+  end
+
+  vim.api.nvim_create_user_command('LspRestart', function(command)
+    local clients = current_lsp_clients(command.args)
+    if #clients == 0 then
+      local suffix = command.args ~= '' and (' named ' .. command.args) or ''
+      vim.notify('No LSP clients' .. suffix .. ' are attached to this buffer', vim.log.levels.WARN)
+      return
+    end
+
+    local names = {}
+    for _, client in ipairs(clients) do
+      table.insert(names, client.name)
+      client:stop(true)
+    end
+    vim.schedule(function()
+      vim.api.nvim_exec_autocmds('FileType', { buffer = 0, modeline = false })
+      vim.notify('Restarted LSP: ' .. table.concat(names, ', '))
+    end)
+  end, {
+    nargs = '?',
+    complete = function() return vim.tbl_map(function(client) return client.name end, current_lsp_clients()) end,
+    desc = 'Restart LSP clients attached to the current buffer',
+  })
+
+  vim.api.nvim_create_user_command('LspInfo', function()
+    local clients = current_lsp_clients()
+    if #clients == 0 then
+      vim.notify('No LSP clients are attached to this buffer', vim.log.levels.INFO)
+      return
+    end
+    local details = vim.tbl_map(function(client)
+      return ('%s (id %d, root %s)'):format(client.name, client.id, client.config.root_dir or 'none')
+    end, clients)
+    vim.notify('Attached LSP clients:\n' .. table.concat(details, '\n'), vim.log.levels.INFO)
+  end, { desc = 'Show LSP clients attached to the current buffer' })
 end
 
 -- ============================================================
