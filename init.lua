@@ -1101,15 +1101,14 @@ do
     return results
   end
 
-  -- Start with recent files, then switch to the normal rg-backed file list as
-  -- soon as the prompt is non-empty. This keeps <leader>ff useful for both
-  -- quick access and searching the entire workspace.
+  -- Show project files even before a query is entered, while keeping the MRU
+  -- entries first. This means <leader>ff is never an empty picker in a new
+  -- project and all files remain searchable without changing finders.
   vim.keymap.set('n', '<leader>ff', function()
     local opts = vim.tbl_extend('force', file_picker_layout, {
-      prompt_title = 'Recent Files',
+      prompt_title = 'Recent Files + Files',
       __locations_input = true,
     })
-    local recent = recent_files()
     local function all_files_command()
       if vim.fn.executable 'rg' == 1 then return { 'rg', '--files', '--color', 'never' } end
       if vim.fn.executable 'fd' == 1 then return { 'fd', '--type', 'f', '--color', 'never' } end
@@ -1117,32 +1116,37 @@ do
       return { 'find', '.', '-type', 'f', '-not', '-path', '*/.*' }
     end
 
-    local entry_maker = make_entry.gen_from_file(opts)
-    local recent_finder = finders.new_table {
-      results = recent,
-      entry_maker = entry_maker,
-    }
-    -- Use Telescope's one-shot finder for the full file list. It caches the
-    -- results, just like builtin.find_files, so typing does not restart rg.
-    local all_files_finder = finders.new_oneshot_job(all_files_command(), {
-      cwd = opts.cwd,
-      entry_maker = entry_maker,
-    })
-    local showing_all_files = false
+    -- Fetch the file list asynchronously, then append only files which are not
+    -- already in the MRU list. A table finder preserves this order for an empty
+    -- prompt; Telescope's file sorter takes over as soon as a query is typed.
+    vim.system(all_files_command(), { cwd = opts.cwd, text = true }, function(result)
+      if result.code ~= 0 then return end
+      vim.schedule(function()
+        local files = recent_files()
+        local seen = {}
+        for _, file in ipairs(files) do
+          seen[vim.fs.normalize(vim.fn.fnamemodify(file, ':p'))] = true
+        end
+        for _, file in ipairs(vim.split(result.stdout, '\n', { trimempty = true })) do
+          local absolute_file = vim.fs.normalize(vim.fn.fnamemodify(file, ':p'))
+          if not seen[absolute_file] then
+            seen[absolute_file] = true
+            files[#files + 1] = absolute_file
+          end
+        end
 
-    pickers
-      .new(opts, {
-        finder = recent_finder,
-        on_input_filter_cb = function(prompt)
-          local should_show_all_files = prompt ~= ''
-          if should_show_all_files == showing_all_files then return end
-          showing_all_files = should_show_all_files
-          return { updated_finder = should_show_all_files and all_files_finder or recent_finder }
-        end,
-        previewer = telescope_config.grep_previewer(opts),
-        sorter = telescope_config.file_sorter(opts),
-      })
-      :find()
+        pickers
+          .new(opts, {
+            finder = finders.new_table {
+              results = files,
+              entry_maker = make_entry.gen_from_file(opts),
+            },
+            previewer = telescope_config.grep_previewer(opts),
+            sorter = telescope_config.file_sorter(opts),
+          })
+          :find()
+      end)
+    end)
   end, { desc = '[F]ind recent files or search all files' })
 
   vim.keymap.set('n', '<leader>fd', function()
