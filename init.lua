@@ -106,6 +106,12 @@ do
   -- NOTE: You can change these options as you wish!
   --  For more options, you can see `:help option-list`
 
+  -- Use two spaces for indentation and expand Tab presses into spaces.
+  vim.o.tabstop = 2
+  vim.o.shiftwidth = 2
+  vim.o.softtabstop = 2
+  vim.o.expandtab = true
+
   -- Make line numbers default
   vim.o.number = true
   -- You can also add relative line numbers, to help with jumping.
@@ -1120,7 +1126,8 @@ do
     -- already in the MRU list. A table finder preserves this order for an empty
     -- prompt; Telescope's file sorter takes over as soon as a query is typed.
     vim.system(all_files_command(), { cwd = opts.cwd, text = true }, function(result)
-      if result.code ~= 0 then return end
+      -- File scanners can return a non-zero status for unreadable paths while
+      -- still producing a useful file list, so ignore their exit status.
       vim.schedule(function()
         local files = recent_files()
         local seen = {}
