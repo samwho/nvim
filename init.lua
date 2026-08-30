@@ -158,6 +158,9 @@ do
   vim.o.splitright = true
   vim.o.splitbelow = true
 
+  -- Display tab characters at two columns.
+  vim.o.tabstop = 2
+
   -- Sets how neovim will display certain whitespace characters in the editor.
   --  See `:help 'list'`
   --  and `:help 'listchars'`
