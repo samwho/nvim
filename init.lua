@@ -164,6 +164,9 @@ do
   vim.o.splitright = true
   vim.o.splitbelow = true
 
+  -- Display tab characters at two columns.
+  vim.o.tabstop = 2
+
   -- Sets how neovim will display certain whitespace characters in the editor.
   --  See `:help 'list'`
   --  and `:help 'listchars'`
@@ -196,8 +199,8 @@ local lsp_hover_options = {
   border = 'rounded',
   title = ' Hover ',
   title_pos = 'center',
-  max_width = 80,
-  max_height = 15,
+  max_width = 100,
+  max_height = 30,
   wrap = true,
   focusable = true,
   focus = true,
@@ -239,6 +242,9 @@ local function configure_hover_window(bufnr, win)
     nowait = true,
     desc = 'Close hover window',
   })
+  -- Hovers are read-only documentation: keep Markdown concealed even on
+  -- the cursor line while navigating, selecting, or searching.
+  vim.wo[win].concealcursor = 'nvic'
   vim.api.nvim_set_current_win(win)
 end
 
@@ -247,6 +253,18 @@ end
 -- where the hover request bypasses the deprecated global hover handler.
 local lsp_open_floating_preview = vim.lsp.util.open_floating_preview
 vim.lsp.util.open_floating_preview = function(contents, syntax, opts)
+  if opts and opts.focus_id == 'textDocument/hover' and not opts.height then
+    opts = vim.tbl_extend('force', {}, opts)
+    -- Reserve space for raw Markdown, including fences. Otherwise Neovim can
+    -- shrink a concealed code block to one line before we focus the float,
+    -- revealing its fences and pushing the actual signature out of view.
+    local width = math.max(1, math.min(opts.max_width or 100, vim.api.nvim_win_get_width(0), vim.o.columns - 4))
+    local height = 0
+    for _, line in ipairs(vim.split(table.concat(contents, '\n'), '\n')) do
+      height = height + math.max(1, math.ceil(vim.fn.strdisplaywidth(line) / width))
+    end
+    opts.height = math.min(height, opts.max_height or 30)
+  end
   local bufnr, win = lsp_open_floating_preview(contents, syntax, opts)
   if opts and opts.focus_id == 'textDocument/hover' then configure_hover_window(bufnr, win) end
   return bufnr, win
@@ -1326,6 +1344,7 @@ do
 
       -- Find references for the word under your cursor.
       vim.keymap.set('n', 'grr', builtin.lsp_references, { buffer = buf, desc = '[G]oto [R]eferences' })
+      vim.keymap.set('n', 'gu', builtin.lsp_references, { buffer = buf, desc = '[G]oto [U]sages' })
 
       -- Jump to the implementation of the word under your cursor.
       -- Useful when your language has ways of declaring types without an actual implementation.
@@ -1462,7 +1481,26 @@ do
       -- WARN: This is not Goto Definition, this is Goto Declaration.
       --  For example, in C this would take you to the header.
       map('grD', vim.lsp.buf.declaration, '[G]oto [D]eclaration')
-      map('gd', vim.lsp.buf.definition, '[G]oto [D]efinition')
+      map('gd', function()
+        vim.lsp.buf.definition {
+          on_list = function(result)
+            -- TypeScript can return both a class and its constructor. Prefer
+            -- the class declaration; otherwise jump to the first definition.
+            local target = result.items[1]
+            for _, item in ipairs(result.items) do
+              if (item.text or ''):match '%f[%w_]class%f[^%w_]%s+' then
+                target = item
+                break
+              end
+            end
+            if not target then return end
+            local uri = target.bufnr and target.bufnr > 0 and vim.uri_from_bufnr(target.bufnr) or vim.uri_from_fname(target.filename)
+            -- Quickfix columns are byte offsets, regardless of LSP encoding.
+            local position = { line = target.lnum - 1, character = math.max(0, target.col - 1) }
+            vim.lsp.util.show_document({ uri = uri, range = { start = position, ['end'] = position } }, 'utf-8', { focus = true })
+          end,
+        }
+      end, '[G]oto [D]efinition')
 
 
 
@@ -1574,12 +1612,21 @@ do
   -- and earlier need typescript-language-server. Keep the two clients from
   -- attaching to the same project and never pass --lsp to an older compiler.
   local function typescript_major(root_dir)
-    local sdk = typescript_sdk_path(root_dir)
-    if not sdk then return end
-    local package_json = vim.fs.joinpath(vim.fs.dirname(sdk), 'package.json')
-    local ok, package = pcall(vim.json.decode, table.concat(vim.fn.readfile(package_json), '\n'))
-    if not ok or type(package.version) ~= 'string' then return end
-    return tonumber(package.version:match '^(%d+)')
+    -- Read the project's actual compiler version, not the legacy SDK selected
+    -- for MDX: TypeScript 7 no longer includes tsserverlibrary.js.
+    local directory = root_dir or vim.uv.cwd()
+    while directory do
+      local package_json = vim.fs.joinpath(directory, 'node_modules', 'typescript', 'package.json')
+      if vim.uv.fs_stat(package_json) then
+        local ok, package = pcall(function() return vim.json.decode(table.concat(vim.fn.readfile(package_json), '\n')) end)
+        if not ok or type(package) ~= 'table' or type(package.version) ~= 'string' then return end
+        return tonumber(package.version:match '^(%d+)')
+      end
+
+      local parent = vim.fs.dirname(directory)
+      if parent == directory then break end
+      directory = parent
+    end
   end
 
   local function typescript_lsp_root_dir(supports_version)
@@ -2122,7 +2169,10 @@ do
         -- servers can operate on them through Otter.
         otter.activate({ 'javascript', 'css' })
       else
-        otter.activate({ 'css', 'html' })
+        -- Lit's ${...} interpolations remain in Otter's virtual CSS/HTML
+        -- buffers and are not valid standalone CSS or HTML. Keep embedded
+        -- completion/hover, but do not mirror parser false positives.
+        otter.activate({ 'css', 'html' }, true, false)
       end
     end,
   })
