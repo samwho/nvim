@@ -951,67 +951,104 @@ end
 -- Telescope setup, keymaps, LSP picker mappings
 -- ============================================================
 do
-  -- Sidebar file tree.
+  local last_editor_win
+
+  local function focus_last_editor()
+    if
+      last_editor_win
+      and vim.api.nvim_win_is_valid(last_editor_win)
+      and vim.api.nvim_win_get_tabpage(last_editor_win) == vim.api.nvim_get_current_tabpage()
+    then
+      vim.api.nvim_set_current_win(last_editor_win)
+    else
+      vim.cmd.wincmd 'p'
+    end
+  end
+
+  -- Neo-tree keeps recursive fuzzy-search results inside the tree itself.
   vim.pack.add {
-    gh 'nvim-tree/nvim-tree.lua',
+    gh 'nvim-lua/plenary.nvim',
+    gh 'MunifTanjim/nui.nvim',
     gh 'nvim-tree/nvim-web-devicons',
+    { src = gh 'nvim-neo-tree/neo-tree.nvim', version = 'v3.x' },
   }
-  require('nvim-tree').setup {
-    on_attach = function(bufnr)
-      local api = require 'nvim-tree.api'
-      api.map.on_attach.default(bufnr)
-      local opts = { buffer = bufnr, noremap = true, silent = true, nowait = true }
-      vim.keymap.set('n', '<Esc>', api.tree.close, vim.tbl_extend('force', opts, { desc = 'Close file tree' }))
-      vim.keymap.set('n', '/', api.filter.live.start, vim.tbl_extend('force', opts, { desc = 'Filter file tree' }))
-    end,
-    view = {
-      side = 'left',
+  require('neo-tree').setup {
+    close_if_last_window = false,
+    window = {
+      position = 'right',
       width = 32,
-      preserve_window_proportions = true,
-    },
-    renderer = {
-      group_empty = true,
-      indent_markers = { enable = true },
-    },
-    update_focused_file = {
-      enable = true,
-      update_root = false,
-    },
-    actions = {
-      open_file = {
-        -- Selecting a file closes the tree and returns to the editor.
-        quit_on_open = true,
+      mappings = {
+        ['<Esc>'] = 'close_window',
       },
     },
-    git = { enable = true, ignore = true },
-    filters = { dotfiles = false },
+    filesystem = {
+      follow_current_file = {
+        enabled = true,
+        leave_dirs_open = false,
+      },
+      find_by_full_path_words = true,
+      filtered_items = {
+        hide_dotfiles = false,
+        hide_gitignored = false,
+        hide_ignored = false,
+      },
+      window = {
+        mappings = {
+          ['/'] = {
+            'fuzzy_finder',
+            config = { keep_filter_on_submit = false },
+          },
+        },
+      },
+    },
   }
 
   -- Make the tree inherit the active colorscheme instead of using its own
   -- opaque background.
-  local function sync_nvim_tree_highlights()
+  local function sync_neo_tree_highlights()
     for target, source in pairs {
-      NvimTreeNormal = 'Normal',
-      NvimTreeNormalNC = 'Normal',
-      NvimTreeNormalFloat = 'Normal',
-      NvimTreeEndOfBuffer = 'EndOfBuffer',
-      NvimTreeWinSeparator = 'WinSeparator',
+      NeoTreeNormal = 'Normal',
+      NeoTreeNormalNC = 'Normal',
+      NeoTreeEndOfBuffer = 'EndOfBuffer',
+      NeoTreeWinSeparator = 'WinSeparator',
     } do
       vim.api.nvim_set_hl(0, target, { link = source })
     end
   end
-  sync_nvim_tree_highlights()
-  vim.api.nvim_create_autocmd('ColorScheme', { callback = sync_nvim_tree_highlights })
+  sync_neo_tree_highlights()
+  vim.api.nvim_create_autocmd('ColorScheme', { callback = sync_neo_tree_highlights })
 
-  local nvim_tree_api = require 'nvim-tree.api'
-  vim.keymap.set('n', '<leader>e', function()
-    if nvim_tree_api.tree.is_visible() then
-      nvim_tree_api.tree.close()
+  local neo_tree_command = require 'neo-tree.command'
+  local function show_file_tree(action)
+    neo_tree_command.execute {
+      action = action or 'show',
+      source = 'filesystem',
+      position = 'right',
+      reveal = true,
+    }
+  end
+
+  vim.keymap.set('n', '<leader>t', function()
+    if vim.bo.filetype == 'neo-tree' then
+      focus_last_editor()
     else
-      -- Open the tree in the current window as a full-screen file chooser.
-      nvim_tree_api.tree.open { current_window = true }
+      last_editor_win = vim.api.nvim_get_current_win()
+      show_file_tree 'focus'
     end
-  end, { desc = 'Toggle full-screen file tree' })
+  end, { desc = 'Toggle focus between editor and file tree' })
+
+  -- Keep a file tree visible in every editing session, without stealing focus
+  -- from the file Neovim opened for us.
+  vim.api.nvim_create_autocmd('VimEnter', {
+    callback = function()
+      local editor_win = vim.api.nvim_get_current_win()
+      last_editor_win = editor_win
+      vim.schedule(function()
+        show_file_tree()
+        if vim.api.nvim_win_is_valid(editor_win) then vim.api.nvim_set_current_win(editor_win) end
+      end)
+    end,
+  })
 
   -- [[ Fuzzy Finder (files, lsp, etc) ]]
   --
