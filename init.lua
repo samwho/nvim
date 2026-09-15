@@ -2078,12 +2078,30 @@ do
   -- NOTE: You can also specify a branch or a specific commit
   vim.pack.add { { src = gh 'nvim-treesitter/nvim-treesitter', version = 'main' } }
 
+  -- Talon is not in nvim-treesitter's parser registry, so register its
+  -- unofficial grammar before installing parsers. Re-register after updates,
+  -- which rebuild the registry before emitting TSUpdate.
+  local function register_talon_parser()
+    require('nvim-treesitter.parsers').talon = {
+      install_info = {
+        url = gh 'wenkokke/tree-sitter-talon',
+        branch = 'dev',
+      },
+    }
+  end
+  vim.filetype.add { extension = { talon = 'talon' } }
+  register_talon_parser()
+  vim.api.nvim_create_autocmd('User', {
+    pattern = 'TSUpdate',
+    callback = register_talon_parser,
+  })
+
   -- Keep the current function/class context visible while scrolling.
   vim.pack.add { gh 'nvim-treesitter/nvim-treesitter-context' }
   require('treesitter-context').setup { max_lines = 3 }
 
   -- Ensure basic parsers are installed
-  local parsers = { 'bash', 'c', 'css', 'diff', 'html', 'javascript', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'rust', 'toml', 'vim', 'vimdoc', 'yaml' }
+  local parsers = { 'bash', 'c', 'css', 'diff', 'html', 'javascript', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'rust', 'talon', 'toml', 'vim', 'vimdoc', 'yaml' }
   require('nvim-treesitter').install(parsers)
 
   ---@param buf integer
