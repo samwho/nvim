@@ -769,6 +769,25 @@ do
   --  A collection of various small independent plugins/modules
   vim.pack.add { gh 'nvim-mini/mini.nvim' }
 
+  -- Delete files without closing their windows or disturbing the sidebar.
+  local bufremove = require 'mini.bufremove'
+  bufremove.setup()
+  vim.api.nvim_create_user_command('Bdelete', function(command)
+    local buf = command.args ~= '' and vim.fn.bufnr(tonumber(command.args) or command.args) or 0
+    if buf == -1 then error('No matching buffer: ' .. command.args) end
+    bufremove.delete(buf, command.bang)
+  end, { nargs = '?', bang = true, complete = 'buffer', desc = 'Delete buffer while preserving the window layout' })
+
+  -- Redirect interactive :bd / :bdelete, including ! and buffer arguments.
+  -- Leave searches, command arguments, and scripted :bdelete calls untouched.
+  for _, command in ipairs { 'bd', 'bde', 'bdel', 'bdele', 'bdelet', 'bdelete' } do
+    vim.cmd.cnoreabbrev {
+      '<expr>',
+      command,
+      ('getcmdtype() == ":" && getcmdline() == "%s" && getcmdpos() == %d ? "Bdelete" : "%s"'):format(command, #command + 1, command),
+    }
+  end
+
   -- If a nerd font is available, load the icons module for pretty icons in various plugins.
   if vim.g.have_nerd_font then
     require('mini.icons').setup()
@@ -989,7 +1008,7 @@ do
     { src = gh 'nvim-neo-tree/neo-tree.nvim', version = 'v3.x' },
   }
   require('neo-tree').setup {
-    close_if_last_window = false,
+    close_if_last_window = true,
     window = {
       position = 'right',
       width = 32,
