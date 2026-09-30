@@ -685,10 +685,6 @@ do
   -- Without the bang, Aerial focuses the outline when it opens.
   vim.keymap.set('n', '<leader>o', '<cmd>AerialToggle<CR>', { desc = 'Toggle code outline' })
 
-  -- IDE-like breadcrumbs in the winbar for the current symbol context.
-  vim.pack.add { gh 'Bekaboo/dropbar.nvim' }
-  require('dropbar').setup {}
-
   -- Side-by-side Git diff review when needed.
   vim.pack.add { gh 'sindrets/diffview.nvim' }
   local diffview_actions = require 'diffview.actions'
@@ -779,6 +775,26 @@ do
     -- Used for backwards compatibility with plugins that require `nvim-web-devicons` (e.g. telescope.nvim)
     MiniIcons.mock_nvim_web_devicons()
   end
+
+  -- Slanted buffer tabs with file icons, without close buttons.
+  vim.pack.add { gh 'akinsho/bufferline.nvim' }
+  vim.o.termguicolors = true
+  require('bufferline').setup {
+    options = {
+      mode = 'buffers',
+      separator_style = 'slant',
+      tab_size = 0, -- Size tabs to their contents instead of padding to a minimum width.
+      show_buffer_icons = true,
+      show_buffer_close_icons = false,
+      show_close_icon = false,
+      show_tab_indicators = false,
+      offsets = {
+        { filetype = 'neo-tree', text = 'Files', highlight = 'Directory', text_align = 'left' },
+      },
+    },
+  }
+  vim.keymap.set({ 'n', 'i' }, '<C-Left>', '<cmd>BufferLineCyclePrev<CR>', { desc = 'Previous buffer tab', silent = true })
+  vim.keymap.set({ 'n', 'i' }, '<C-Right>', '<cmd>BufferLineCycleNext<CR>', { desc = 'Next buffer tab', silent = true })
 
   -- Better Around/Inside textobjects
   --
@@ -1745,8 +1761,6 @@ do
       root_dir = typescript_lsp_root_dir(function(major) return major and major < 7 end),
     },
 
-    stylua = {}, -- Used to format Lua code
-
     -- Special Lua Config, as recommended by neovim help docs
     lua_ls = {
       on_init = function(client)
@@ -1808,6 +1822,7 @@ do
     -- actual linter version remains project-owned.
     'eslint-lsp',
     'eslint_d',
+    'stylua', -- Lua formatting through Conform, not an LSP server.
   })
 
   require('mason-tool-installer').setup { ensure_installed = ensure_installed }

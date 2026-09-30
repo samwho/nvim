@@ -179,7 +179,9 @@ In addition to Kickstart's plugins, this configuration adds or uses:
 - **aerial.nvim** for Tree-sitter/LSP/Markdown symbols, placed at the left edge
   and sized to its contents. Its local navigation mappings are removed so the
   global split mappings continue to work.
-- **dropbar.nvim** for symbol breadcrumbs in the winbar.
+- **bufferline.nvim** for slanted buffer tabs with file icons and no close
+  buttons. Ctrl+Left and Ctrl+Right cycle through buffers in normal and insert
+  mode.
 - **diffview.nvim** for side-by-side diffs and file history.
 - **tiny-inline-diagnostic.nvim** for wrapped inline diagnostics.
 - **nvim-treesitter-context** to keep up to three lines of function/class
