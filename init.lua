@@ -2169,7 +2169,7 @@ do
 
   -- Keep the current function/class context visible while scrolling.
   vim.pack.add { gh 'nvim-treesitter/nvim-treesitter-context' }
-  require('treesitter-context').setup { max_lines = 3 }
+  require('treesitter-context').setup { max_lines = 0, mode = 'topline' }
 
   -- Ensure basic parsers are installed
   local parsers = { 'bash', 'c', 'css', 'diff', 'html', 'javascript', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'rust', 'talon', 'toml', 'vim', 'vimdoc', 'yaml' }
