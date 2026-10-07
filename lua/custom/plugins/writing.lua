@@ -189,8 +189,8 @@ vim.api.nvim_create_autocmd('FileType', {
     vim.opt_local.spell = vim.bo[args.buf].filetype ~= 'mdx'
     vim.opt_local.spelllang = { 'en_gb' }
     vim.opt_local.spellfile = spellfile
-    vim.keymap.set('n', '<leader>d', 'z=', { buffer = args.buf, desc = 'Show spelling suggestions' })
-    vim.keymap.set('n', '<leader>D', function() add_spelling_diagnostic_to_dictionary(args.buf) end, {
+    vim.keymap.set('n', '<leader>s', 'z=', { buffer = args.buf, desc = 'Show spelling suggestions' })
+    vim.keymap.set('n', '<leader>S', function() add_spelling_diagnostic_to_dictionary(args.buf) end, {
       buffer = args.buf,
       desc = 'Add spelling diagnostic to dictionary',
     })

@@ -618,14 +618,13 @@ do
   end
   vim.o.statuscolumn = '%C%{%v:lua.gitsigns_statuscolumn()%}%=%{%v:virtnum > 0 ? "" : "%l"%}'
 
-  -- Gitsigns defaults to greedy navigation, which re-runs the full diff when
-  -- 'diffopt' includes linematch. Use the already-cached hunks instead.
+  -- Greedy navigation jumps between whole contiguous changes, not sub-hunks.
   -- Neovim's built-in `gcc` comment mapping is a longer prefix of `gc` and
   -- forces a timeout before navigation can run, so remove that conflicting
   -- normal-mode mapping. Keep `gc` silent so the key sequence is not echoed.
   pcall(vim.keymap.del, 'n', 'gcc')
-  vim.keymap.set('n', 'gc', function() gitsigns.nav_hunk('next', { greedy = false }) end, { desc = '[G]it next [C]hange', nowait = true, silent = true })
-  vim.keymap.set('n', 'gC', function() gitsigns.nav_hunk('prev', { greedy = false }) end, { desc = '[G]it previous [C]hange' })
+  vim.keymap.set('n', 'gc', function() gitsigns.nav_hunk('next', { greedy = true }) end, { desc = '[G]it next [C]hange', nowait = true, silent = true })
+  vim.keymap.set('n', 'gC', function() gitsigns.nav_hunk('prev', { greedy = true }) end, { desc = '[G]it previous [C]hange' })
 
   -- Character-level inline Git diff highlighting, toggled on demand.
   vim.pack.add { gh 'YouSame2/inlinediff-nvim' }
@@ -1430,7 +1429,9 @@ do
       -- Fuzzy find all the symbols in your current document.
       -- Symbols are things like variables, functions, types, etc.
       vim.keymap.set('n', 'gO', builtin.lsp_document_symbols, { buffer = buf, desc = 'Open Document Symbols' })
-      vim.keymap.set('n', '<leader>s', builtin.lsp_document_symbols, { buffer = buf, desc = '[S]earch document [S]ymbols' })
+      if vim.bo[buf].filetype ~= 'markdown' and vim.bo[buf].filetype ~= 'mdx' then
+        vim.keymap.set('n', '<leader>s', builtin.lsp_document_symbols, { buffer = buf, desc = '[S]earch document [S]ymbols' })
+      end
 
       -- Fuzzy find all the symbols in your current workspace.
       -- Similar to document symbols, except searches over your entire project.
