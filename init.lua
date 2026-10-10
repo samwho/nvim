@@ -124,6 +124,23 @@ do
   -- Don't show the mode, since it's already in the status line
   vim.o.showmode = false
 
+  -- Show paths relative to the launch directory, falling back to ~/ outside it.
+  local launch_cwd = vim.fn.getcwd()
+  function _G.file_winbar_path()
+    local path = vim.api.nvim_buf_get_name(0)
+    return vim.fs.relpath(launch_cwd, path) or vim.fn.fnamemodify(path, ':~')
+  end
+  local function update_file_winbar()
+    local is_file = vim.bo.buftype == '' and vim.api.nvim_buf_get_name(0) ~= ''
+    local is_float = vim.api.nvim_win_get_config(0).relative ~= ''
+    vim.wo.winbar = is_file and not is_float and ' %<%{v:lua.file_winbar_path()} %m' or ''
+  end
+  vim.api.nvim_create_autocmd({ 'BufWinEnter', 'WinEnter', 'BufFilePost' }, {
+    group = vim.api.nvim_create_augroup('file-path-winbar', { clear = true }),
+    callback = update_file_winbar,
+  })
+  update_file_winbar()
+
   -- Sync clipboard between OS and Neovim.
   --  Schedule the setting after `UiEnter` because it can increase startup-time.
   --  Remove this option if you want your OS clipboard to remain independent.
